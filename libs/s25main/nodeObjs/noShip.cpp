@@ -973,7 +973,7 @@ void noShip::StartDrivingToHarborPlace()
         if(homeHarbor && pos == world->GetCoastalPoint(homeHarbor, seaId_))
         {
             // Use the maximum distance between the harbors plus 6 fields
-            unsigned maxDistance = world->CalcHarborDistance(homeHarbor, goalHarbor) + 6;
+            unsigned maxDistance = world->GetMinHarborDistance(homeHarbor, goalHarbor) + 6;
             routeFound = world->FindShipPath(pos, coastalPos, maxDistance, &route_, nullptr);
         } else
             routeFound = world->FindShipPathToHarbor(pos, goalHarbor, seaId_, &route_, nullptr);

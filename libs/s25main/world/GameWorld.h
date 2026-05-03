@@ -94,7 +94,7 @@ public:
                                              unsigned* length = nullptr, MapPoint* firstPt = nullptr,
                                              unsigned max = std::numeric_limits<unsigned>::max());
     /// Prüft, ob eine Schiffsroute noch Gültigkeit hat
-    bool CheckShipRoute(MapPoint start, const std::vector<Direction>& route, unsigned pos, MapPoint* dest);
+    bool CheckShipRoute(MapPoint start, const std::vector<Direction>& route, unsigned pos, MapPoint* dest) const;
     /// Find a route for trade caravanes
     helpers::OptionalEnum<Direction> FindTradePath(MapPoint start, MapPoint dest, unsigned char player,
                                                    unsigned max_route = 0xffffffff, bool random_route = false,

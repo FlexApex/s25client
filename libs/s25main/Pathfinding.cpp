@@ -90,7 +90,7 @@ bool GameWorldBase::FindShipPath(const MapPoint start, const MapPoint dest, unsi
 
 /// Prüft, ob eine Schiffsroute noch Gültigkeit hat
 bool GameWorld::CheckShipRoute(const MapPoint start, const std::vector<Direction>& route, const unsigned pos,
-                               MapPoint* dest)
+                               MapPoint* dest) const
 {
     return GetFreePathFinder().CheckRoute(start, route, pos, PathConditionShip(*this), dest);
 }

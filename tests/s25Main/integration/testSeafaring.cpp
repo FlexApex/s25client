@@ -531,7 +531,7 @@ BOOST_FIXTURE_TEST_CASE(LongDistanceTravel, ShipReadyFixtureBig)
     // Go to opposite one
     const HarborId targetHbId(7);
     // Make sure that the other harbor is far away
-    BOOST_TEST_REQUIRE(world.CalcHarborDistance(harbor.GetHarborPosID(), targetHbId) > 600u);
+    BOOST_TEST_REQUIRE(world.GetMinHarborDistance(harbor.GetHarborPosID(), targetHbId) > 600u);
     // Add some scouts
     harbor.AddToInventory(PeopleCounts::make(Job::Scout, 20), true);
     // We want the ship to only scout unexplored harbors, so set all but one to visible
@@ -799,11 +799,11 @@ BOOST_FIXTURE_TEST_CASE(IncreasedPathLengthWhenHarborDestroyed, ShipReadyFixture
     unsigned len;
     BOOST_TEST_REQUIRE(
       world.FindShipPath(ship.GetPos(), world.GetCoastalPoint(hbIdRight, seaId), unsigned(-1), nullptr, &len));
-    const auto hbDistance = world.CalcHarborDistance(hbIdLeft, hbIdRight);
+    const auto hbDistance = world.GetMinHarborDistance(hbIdLeft, hbIdRight);
     // Reproducer requires the path to be longer than the direct distance and other connections
     BOOST_TEST_REQUIRE(len > hbDistance + extraDist);
-    BOOST_TEST_REQUIRE(hbDistance > world.CalcHarborDistance(hbIdRight, hbIdTop));
-    BOOST_TEST_REQUIRE(hbDistance > world.CalcHarborDistance(hbIdRight, hbIdBottom));
+    BOOST_TEST_REQUIRE(hbDistance > world.GetMinHarborDistance(hbIdRight, hbIdTop));
+    BOOST_TEST_REQUIRE(hbDistance > world.GetMinHarborDistance(hbIdRight, hbIdBottom));
     BuildingFactory::CreateBuilding(world, BuildingType::HarborBuilding, hbRightPos, curPlayer, Nation::Romans);
     BOOST_TEST_REQUIRE(ship.IsMoving());
     BOOST_TEST_REQUIRE(ship.GetHomeHarbor() == hbIdRight);

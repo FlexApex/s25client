@@ -642,9 +642,10 @@ void nofCarrier::LostWork()
                     // Ok let's paddle to the coast
                     rs_pos = 0;
                     cur_rs = nullptr;
-                    if(state == CarrierState::WaitForWare || state == CarrierState::WaitForWareSpace)
-                        WanderOnWater();
+                    const auto oldState = state;
                     state = CarrierState::BoatcarrierWanderOnWater;
+                    if(oldState == CarrierState::WaitForWare || oldState == CarrierState::WaitForWareSpace)
+                        WanderOnWater();
                     return;
                 }
             }

@@ -418,7 +418,7 @@ BOOST_FIXTURE_TEST_CASE(StartAttack, AttackFixture<>)
     TestFailingAttack(gwv, milBld1Pos, attackSrc, 1u);
 }
 
-BOOST_FIXTURE_TEST_CASE(TroopLimitCommandIgnoresInvalidRank, AttackFixture<>)
+BOOST_FIXTURE_TEST_CASE(TroopLimitCommandRejectsInvalidSerializedRank, AttackFixture<>)
 {
     const unsigned maxTroops = milBld0->GetMaxTroopsCt();
     const unsigned limit = maxTroops + 10;
@@ -426,7 +426,7 @@ BOOST_FIXTURE_TEST_CASE(TroopLimitCommandIgnoresInvalidRank, AttackFixture<>)
     this->SetTroopLimit(milBld0Pos, 0, limit);
     BOOST_TEST_REQUIRE(milBld0->GetTroopLimit(0) == limit);
 
-    this->SetTroopLimit(milBld0Pos, NUM_SOLDIER_RANKS, 0);
+    BOOST_REQUIRE_THROW(this->SetTroopLimit(milBld0Pos, NUM_SOLDIER_RANKS, 0), std::range_error);
     BOOST_TEST_REQUIRE(milBld0->GetTroopLimit(0) == limit);
 }
 

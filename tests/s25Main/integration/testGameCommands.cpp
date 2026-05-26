@@ -12,6 +12,8 @@
 #include "enum_cast.hpp"
 #include "factories/BuildingFactory.h"
 #include "figures/nofPassiveSoldier.h"
+#include "helpers/serializeEnums.h"
+#include "helpers/serializePoint.h"
 #include "postSystem/PostBox.h"
 #include "worldFixtures/WorldWithGCExecution.h"
 #include "worldFixtures/initGameRNG.hpp"
@@ -54,6 +56,17 @@ static void dummySuppressUnused(std::ostream& out)
 // LCOV_EXCL_STOP
 
 BOOST_AUTO_TEST_SUITE(GameCommandSuite)
+
+BOOST_AUTO_TEST_CASE(SetTroopLimitRejectsInvalidSerializedRank)
+{
+    gc::Deserializer ser;
+    helpers::pushEnum<uint8_t>(ser, gc::GCType::SetTroopLimit);
+    helpers::pushPoint(ser, MapPoint(0, 0));
+    ser.PushUnsignedChar(static_cast<uint8_t>(MAX_MILITARY_RANK + 1u));
+    ser.PushUnsignedInt(0);
+
+    BOOST_REQUIRE_THROW(gc::GameCommand::Deserialize(ser), std::range_error);
+}
 
 BOOST_FIXTURE_TEST_CASE(PlaceFlagTest, WorldWithGCExecution2P)
 {

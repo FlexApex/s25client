@@ -27,7 +27,7 @@ class GameWorld;
 namespace gc {
 
 namespace detail {
-    inline uint8_t popTroopLimitRank(Serializer& ser)
+    inline uint8_t popSoldierRank(Serializer& ser)
     {
         const auto rank = ser.PopUnsignedChar();
         if(rank > MAX_MILITARY_RANK)
@@ -231,7 +231,7 @@ protected:
         : Coords(GCType::SetTroopLimit, pt), rank(rank), count(count)
     {}
     SetTroopLimit(Serializer& ser)
-        : Coords(GCType::SetTroopLimit, ser), rank(detail::popTroopLimitRank(ser)), count(ser.PopUnsignedInt())
+        : Coords(GCType::SetTroopLimit, ser), rank(detail::popSoldierRank(ser)), count(ser.PopUnsignedInt())
     {}
 
 public:

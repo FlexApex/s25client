@@ -29,35 +29,6 @@ namespace bnw = boost::nowide;
 namespace bfs = boost::filesystem;
 namespace po = boost::program_options;
 
-static void printBriefUsage(const char* prog)
-{
-    bnw::cerr << "Usage: " << prog
-              << " -m <map> --ai aijh|dummy [--ai ...] [options]\n"
-                 "Run with --help or -h for a full list of options and examples.\n";
-}
-
-static const char PATH_EXPANSION_HELP[] =
-  "\nPath expansion (all path options):\n"
-  "  All paths support <RTTR_X> placeholders and a leading ~.\n"
-  "  ~ is expanded by the application: %USERPROFILE%\\Saved Games on Windows,\n"
-  "  $HOME on Linux/macOS.\n"
-  "  Available placeholders:\n"
-  "    <RTTR_USERDATA>   user data dir\n"
-  "                        Windows : %USERPROFILE%\\Saved Games\\Return To The Roots\n"
-  "                        Linux   : $HOME/.s25rttr\n"
-  "                        macOS   : $HOME/Library/Application Support/Return To The Roots\n"
-  "    <RTTR_DATA>       RTTR data directory\n"
-  "    <RTTR_GAME>       directory containing S2 DATA/ and GFX/ folders\n"
-  "    <RTTR_RTTR>       <RTTR_DATA>/RTTR sub-directory\n"
-  "    <RTTR_BIN>        binary directory\n"
-  "    <RTTR_EXTRA_BIN>  extra binary directory\n"
-  "    <RTTR_LIB>        library directory\n"
-  "    <RTTR_DRIVER>     driver directory\n"
-  "  Each placeholder can be overridden with the RTTR_<ID>_DIR environment variable.\n"
-  "\nExample:\n"
-  "  ai-battle -m maps/Wal5.swd --ai 3 --ai 3 --wares alot"
-  " --settings \"<RTTR_USERDATA>/CONFIG.INI\"\n";
-
 static void loadAddonsFromIni(GlobalGameSettings& ggs, const bfs::path& iniPath)
 {
     if(!bfs::exists(iniPath))
@@ -105,41 +76,32 @@ int main(int argc, char** argv)
     po::options_description desc("Allowed options");
     // clang-format off
     desc.add_options()
-        ("help,h", "Show this detailed help and exit.")
-        ("map,m", po::value<std::string>()->required(),
-                        "Path to the map file (.swd/.wld).")
-        ("ai", po::value<std::vector<std::string>>()->required(),
-                        "AI player to add: aijh (the AIJH AI) | dummy (does nothing).\n"
-                        "Case-insensitive. Repeat the flag once per player (e.g. --ai aijh --ai aijh).")
-        ("objective", po::value<std::string>()->default_value("domination"),
-                        "Win condition: domination (default) | conquer")
-        ("wares", po::value<std::string>()->default_value("normal"),
-                        "Starting wares for all players: vlow | low | normal (default) | alot")
-        ("settings", po::value(&settings_path),
-                        "INI file with an [addons] section to configure addon settings (optional).\n"
-                        "Keys are numeric AddonId values; values are the option index to select.\n"
-                        "When omitted, all addons use their default values.")
-        ("replay", po::value(&replay_path),
-                        "File to write a replay to (optional). If a Lua script was loaded via --lua\n"
-                        "it is embedded into the replay automatically.")
-        ("save", po::value(&savegame_path),
-                        "File to write a savegame to after the run (optional).")
-        ("lua", po::value(&lua_path),
-                        "Lua script to execute during the game (optional). The script is also embedded\n"
-                        "into the replay when --replay is used.")
-        ("random_init", po::value(&random_init),
-                        "Seed for the main random number generator (optional, default: time-based).")
-        ("random_ai_init", po::value(&random_ai_init),
-                        "Seed for the AI random number generator (optional, defaults to random_init).")
-        ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),
-                        "Maximum number of game frames to simulate before stopping (optional).")
-        ("version", "Show version information and exit.")
+        ("help,h", "Show help")
+        ("map,m", po::value<std::string>()->required(),"Map to load")
+        ("ai", po::value<std::vector<std::string>>()->required(),"AI player(s) to add (aijh | dummy)")
+        ("objective", po::value<std::string>()->default_value("domination"),"domination(default) | conquer")
+        ("wares", po::value<std::string>()->default_value("normal"),"Starting wares: vlow | low | normal (default) | alot")
+        ("settings", po::value(&settings_path),"INI file with an [addons] section to configure addon settings (optional)")
+        ("replay", po::value(&replay_path),"Filename to write replay to (optional)")
+        ("save", po::value(&savegame_path),"Filename to write savegame to (optional)")
+        ("lua", po::value(&lua_path),"Lua script to execute during the game (optional)")
+        ("random_init", po::value(&random_init),"Seed value for the random number generator (optional)")
+        ("random_ai_init", po::value(&random_ai_init),"Seed value for the AI random number generator (optional)")
+        ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),"Maximum number of game frames to run (optional)")
+        ("version", "Show version information and exit")
         ;
     // clang-format on
 
+    const auto printHelp = [&](std::ostream& os) {
+        os << desc
+           << "\nNote: path arguments support the <RTTR_USERDATA> placeholder "
+              "(game data folder: SAVES, REPLAYS, MAPS, PRESETS)."
+           << std::endl;
+    };
+
     if(argc == 1)
     {
-        printBriefUsage(argv[0]);
+        printHelp(bnw::cerr);
         return 1;
     }
 
@@ -150,7 +112,7 @@ int main(int argc, char** argv)
 
         if(options.count("help"))
         {
-            bnw::cout << desc << PATH_EXPANSION_HELP << std::endl;
+            printHelp(bnw::cout);
             return 0;
         }
         if(options.count("version"))
@@ -165,7 +127,7 @@ int main(int argc, char** argv)
     } catch(const std::exception& e)
     {
         bnw::cerr << "Error: " << e.what() << std::endl;
-        printBriefUsage(argv[0]);
+        printHelp(bnw::cerr);
         return 1;
     }
 

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "Game.h"
+#include "ILocalGameState.h"
 #include "Replay.h"
 #include "ai/AIPlayer.h"
 #include "gameTypes/AIInfo.h"
@@ -34,6 +35,15 @@ public:
 private:
     void PrintState();
 
+    struct LocalState : ILocalGameState
+    {
+        unsigned GetPlayerId() const override { return 0; }
+        bool IsHost() const override { return true; }
+        std::string FormatGFTime(unsigned) const override { return ""; }
+        void SystemChat(const std::string&) override {}
+    };
+
+    LocalState localState_;
     boost::filesystem::path map_;
     Game game_;
     GameWorld& world_;

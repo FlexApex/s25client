@@ -5,7 +5,6 @@
 #include "HeadlessGame.h"
 #include "EventManager.h"
 #include "GlobalGameSettings.h"
-#include "ILocalGameState.h"
 #include "PlayerInfo.h"
 #include "Savegame.h"
 #include "factories/AIFactory.h"
@@ -30,15 +29,6 @@ std::string HumanReadableNumber(unsigned num);
 namespace bfs = boost::filesystem;
 namespace bnw = boost::nowide;
 
-namespace {
-struct HeadlessLocalState : ILocalGameState
-{
-    unsigned GetPlayerId() const override { return 0; }
-    bool IsHost() const override { return true; }
-    std::string FormatGFTime(unsigned) const override { return ""; }
-    void SystemChat(const std::string& msg) override { bnw::cout << "[lua] " << msg << "\n"; }
-};
-} // namespace
 using bfs::canonical;
 
 #ifdef WIN32
@@ -166,9 +156,8 @@ void HeadlessGame::RecordReplay(const bfs::path& path, unsigned random_init)
 
 void HeadlessGame::LoadLuaScript(const bfs::path& luaPath)
 {
-    HeadlessLocalState state;
     MapLoader loader(world_);
-    if(!loader.LoadLuaScript(game_, state, luaPath))
+    if(!loader.LoadLuaScript(game_, localState_, luaPath))
         throw std::runtime_error("Failed to load Lua script: " + luaPath.string());
     luaPath_ = luaPath; // remember for embedding in the replay
     bnw::cout << "Lua script loaded: " << luaPath << '\n';

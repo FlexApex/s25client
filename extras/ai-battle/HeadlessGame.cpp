@@ -57,6 +57,7 @@ HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, 
     {
         if(!loader.LoadLuaScript(game_, localState_, luaPath))
             throw std::runtime_error("Failed to load Lua script: " + luaPath.string());
+        world_.GetLua().setSuppressStdout(true);
         luaPath_ = luaPath;
         bnw::cout << "Lua script loaded: " << luaPath << '\n';
     }

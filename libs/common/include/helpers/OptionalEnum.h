@@ -49,23 +49,23 @@ public:
     constexpr void reset() noexcept { value_ = invalidValue; }
 
     // Those comparisons can be simplified to comparing value_ due to the invalid value being a distinct value
-    friend constexpr bool operator==(OptionalEnum lhs, OptionalEnum rhs) { return lhs.value_ == rhs.value_; }
-    friend constexpr bool operator!=(OptionalEnum lhs, OptionalEnum rhs) { return lhs.value_ != rhs.value_; }
+    friend constexpr bool operator==(OptionalEnum lhs, OptionalEnum rhs) noexcept { return lhs.value_ == rhs.value_; }
+    friend constexpr bool operator!=(OptionalEnum lhs, OptionalEnum rhs) noexcept { return lhs.value_ != rhs.value_; }
     // Technically not required as above operators would be used, but included for better debug performance and
     // mirroring the standard
-    friend constexpr bool operator==(OptionalEnum lhs, const T& rhs)
+    friend constexpr bool operator==(OptionalEnum lhs, const T& rhs) noexcept
     {
         return lhs.value_ == static_cast<underlying_type>(rhs);
     }
-    friend constexpr bool operator!=(OptionalEnum lhs, const T& rhs)
+    friend constexpr bool operator!=(OptionalEnum lhs, const T& rhs) noexcept
     {
         return lhs.value_ != static_cast<underlying_type>(rhs);
     }
-    friend constexpr bool operator==(const T& lhs, OptionalEnum rhs)
+    friend constexpr bool operator==(const T& lhs, OptionalEnum rhs) noexcept
     {
         return static_cast<underlying_type>(lhs) == rhs.value_;
     }
-    friend constexpr bool operator!=(const T& lhs, OptionalEnum rhs)
+    friend constexpr bool operator!=(const T& lhs, OptionalEnum rhs) noexcept
     {
         return static_cast<underlying_type>(lhs) != rhs.value_;
     }

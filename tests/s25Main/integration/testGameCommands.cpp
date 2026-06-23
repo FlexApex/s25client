@@ -28,6 +28,7 @@
 #include "gameData/ShieldConsts.h"
 #include "rttr/test/random.hpp"
 #include <boost/test/unit_test.hpp>
+#include <array>
 #include <iostream>
 
 #if defined(PVS_STUDIO) || defined(__clang_analyzer__)
@@ -55,19 +56,46 @@ static void dummySuppressUnused(std::ostream& out)
 }
 // LCOV_EXCL_STOP
 
+namespace {
+class CommandCaptureFactory : public GameCommandFactory
+{
+public:
+    gc::GameCommandPtr lastCommand;
+
+private:
+    bool AddGC(gc::GameCommandPtr gc) override
+    {
+        lastCommand = std::move(gc);
+        return true;
+    }
+};
+
+template<typename CreateCommand>
+gc::Deserializer serializeCapturedCommand(CreateCommand&& createCommand)
+{
+    CommandCaptureFactory factory;
+    createCommand(factory);
+    BOOST_TEST_REQUIRE(factory.lastCommand);
+
+    gc::Deserializer ser;
+    factory.lastCommand->Serialize(ser);
+    return ser;
+}
+} // namespace
+
 BOOST_AUTO_TEST_SUITE(GameCommandSuite)
 
 BOOST_AUTO_TEST_CASE(SoldierRankCommandsRejectInvalidSerializedRank)
 {
-    const gc::GCType commands[] = {gc::GCType::SetTroopLimit, gc::GCType::ChangeReserve};
-    for(const auto command : commands)
-    {
-        gc::Deserializer ser;
-        helpers::pushEnum<uint8_t>(ser, command);
-        helpers::pushPoint(ser, MapPoint(0, 0));
-        ser.PushUnsignedChar(static_cast<uint8_t>(MAX_MILITARY_RANK + 1u));
-        ser.PushUnsignedInt(0);
+    const auto invalidRank = static_cast<unsigned char>(MAX_MILITARY_RANK + 1u);
+    const auto pt = rttr::test::randomPoint<MapPoint>(0, 20);
+    const auto count = rttr::test::randomValue<unsigned>(0u, 100u);
+    auto serializedCommands = std::array{
+      serializeCapturedCommand([&](CommandCaptureFactory& factory) { factory.SetTroopLimit(pt, invalidRank, count); }),
+      serializeCapturedCommand([&](CommandCaptureFactory& factory) { factory.ChangeReserve(pt, invalidRank, count); })};
 
+    for(auto& ser : serializedCommands)
+    {
         BOOST_REQUIRE_THROW(gc::GameCommand::Deserialize(ser), std::range_error);
     }
 }

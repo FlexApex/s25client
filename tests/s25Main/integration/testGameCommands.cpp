@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "GameCommands.h"
 #include "GamePlayer.h"
 #include "PointOutput.h"
 #include "RttrForeachPt.h"
@@ -28,7 +29,6 @@
 #include "gameData/ShieldConsts.h"
 #include "rttr/test/random.hpp"
 #include <boost/test/unit_test.hpp>
-#include <array>
 #include <iostream>
 
 #if defined(PVS_STUDIO) || defined(__clang_analyzer__)
@@ -57,47 +57,36 @@ static void dummySuppressUnused(std::ostream& out)
 // LCOV_EXCL_STOP
 
 namespace {
-class CommandCaptureFactory : public GameCommandFactory
+class TestSetTroopLimit : public gc::SetTroopLimit
 {
 public:
-    gc::GameCommandPtr lastCommand;
-
-private:
-    bool AddGC(gc::GameCommandPtr gc) override
-    {
-        lastCommand = std::move(gc);
-        return true;
-    }
+    TestSetTroopLimit(const MapPoint pt, const uint8_t rank, const uint32_t count) : gc::SetTroopLimit(pt, rank, count)
+    {}
 };
 
-template<typename CreateCommand>
-gc::Deserializer serializeCapturedCommand(CreateCommand&& createCommand)
+class TestChangeReserve : public gc::ChangeReserve
 {
-    CommandCaptureFactory factory;
-    createCommand(factory);
-    BOOST_TEST_REQUIRE(factory.lastCommand);
-
-    gc::Deserializer ser;
-    factory.lastCommand->Serialize(ser);
-    return ser;
-}
+public:
+    TestChangeReserve(const MapPoint pt, const uint8_t rank, const uint32_t count) : gc::ChangeReserve(pt, rank, count)
+    {}
+};
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(GameCommandSuite)
 
 BOOST_AUTO_TEST_CASE(SoldierRankCommandsRejectInvalidSerializedRank)
 {
-    const auto invalidRank = static_cast<unsigned char>(MAX_MILITARY_RANK + 1u);
-    const auto pt = rttr::test::randomPoint<MapPoint>(0, 20);
-    const auto count = rttr::test::randomValue<unsigned>(0u, 100u);
-    auto serializedCommands = std::array{
-      serializeCapturedCommand([&](CommandCaptureFactory& factory) { factory.SetTroopLimit(pt, invalidRank, count); }),
-      serializeCapturedCommand([&](CommandCaptureFactory& factory) { factory.ChangeReserve(pt, invalidRank, count); })};
+    constexpr auto invalidRank = static_cast<uint8_t>(MAX_MILITARY_RANK + 1u);
+    const auto pt = rttr::test::randomPoint<MapPoint>();
+    const auto count = rttr::test::randomValue<unsigned>();
 
-    for(auto& ser : serializedCommands)
-    {
-        BOOST_REQUIRE_THROW(gc::GameCommand::Deserialize(ser), std::range_error);
-    }
+    gc::Deserializer troopLimitCommand;
+    TestSetTroopLimit(pt, invalidRank, count).Serialize(troopLimitCommand);
+    BOOST_REQUIRE_THROW(gc::GameCommand::Deserialize(troopLimitCommand), std::range_error);
+
+    gc::Deserializer reserveCommand;
+    TestChangeReserve(pt, invalidRank, count).Serialize(reserveCommand);
+    BOOST_REQUIRE_THROW(gc::GameCommand::Deserialize(reserveCommand), std::range_error);
 }
 
 BOOST_FIXTURE_TEST_CASE(PlaceFlagTest, WorldWithGCExecution2P)

@@ -30,7 +30,6 @@
 #include <boost/test/data/monomorphic.hpp>
 #include <boost/test/data/test_case.hpp>
 #include <boost/test/unit_test.hpp>
-#include <algorithm>
 #include <array>
 #include <iostream>
 #include <numeric>
@@ -422,15 +421,12 @@ BOOST_FIXTURE_TEST_CASE(StartAttack, AttackFixture<>)
 BOOST_FIXTURE_TEST_CASE(TroopLimitCommandRejectsInvalidSerializedRank, AttackFixture<>)
 {
     std::array<unsigned, NUM_SOLDIER_RANKS> expectedLimits{};
-    const auto firstLimit = rttr::test::randomValue<unsigned>(1u, 20u);
-    const auto limitStep = rttr::test::randomValue<unsigned>(1u, 5u);
+    const auto firstLimit = rttr::test::randomValue(1u, 20u);
+    const auto limitStep = rttr::test::randomValue(1u, 5u);
+    // Use unique values to detect overwriting
     for(unsigned rank = 0; rank < expectedLimits.size(); ++rank)
     {
         expectedLimits[rank] = firstLimit + rank * limitStep;
-        const bool isUniqueLimit =
-          std::find(expectedLimits.begin(), expectedLimits.begin() + rank, expectedLimits[rank])
-          == expectedLimits.begin() + rank;
-        BOOST_TEST_REQUIRE(isUniqueLimit);
         this->SetTroopLimit(milBld0Pos, rank, expectedLimits[rank]);
     }
 

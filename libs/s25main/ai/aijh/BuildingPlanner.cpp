@@ -386,6 +386,9 @@ void BuildingPlanner::ApplyImprovedScaling(const AIPlayerJH& aijh, const unsigne
     // resources away from (far more valuable) territorial expansion and makes the AI markedly weaker.
     // With this strict gate the improved AI is byte-for-byte the baseline until it is genuinely
     // boxed-in/saturated, and only then converts the idle surplus into more economy and army.
+    // (Tested relaxing this gate for INEXHAUSTIBLE_MINES so it would ramp the permanent mine chain
+    // earlier - it measured as a net negative: ramping before expansion saturates diverts boards/
+    // stones/workers away from territory and yields fewer buildings AND soldiers. Kept strict.)
     if(numMilitaryBlds < 25 || inventory.goods[GoodType::Boards] < 200 || inventory.goods[GoodType::Stones] < 120)
         return;
 

@@ -5,6 +5,9 @@
 #include "GlobalGameSettings.h"
 #include "HeadlessGame.h"
 #include "QuickStartGame.h"
+#include "addons/const_addons.h"
+#include "gameTypes/TeamTypes.h"
+#include <sstream>
 #include "RTTR_Version.h"
 #include "RttrConfig.h"
 #include "ai/random.h"
@@ -51,6 +54,10 @@ int main(int argc, char** argv)
         ("stats", po::value<std::string>(),"CSV file to write per-player trajectory stats to (optional)")
         ("statsInterval", po::value<unsigned>()->default_value(1000),"Game-frame interval between stats rows")
         ("baseline", po::value<std::vector<unsigned>>()->multitoken(),"Player index(es) using the ORIGINAL (unimproved) AI, for A/B testing")
+        ("teams", po::value<std::string>(),"Team assignment, e.g. \"0,1;2,3\" for a 2v2 (groups separated by ';', player indices by ',')")
+        ("inexhaustibleMines", po::bool_switch(),"Enable INEXHAUSTIBLE_MINES addon (mines never deplete)")
+        ("goldDeposits", po::value<unsigned>(),"CHANGE_GOLD_DEPOSITS selection: 0=none 1=remove 2=iron 3=coal 4=granite")
+        ("maxRank", po::value<unsigned>(),"MAX_RANK selection: 0=General(4) .. 4=Private(0)")
         ("random_init", po::value(&random_init),"Seed value for the random number generator (optional)")
         ("random_ai_init", po::value(&random_ai_init),"Seed value for the AI random number generator (optional)")
         ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),"Maximum number of game frames to run (optional)")
@@ -121,11 +128,45 @@ int main(int argc, char** argv)
 
         ggs.objective = GameObjective::TotalDomination;
 
+        // Addon settings (so simulations can match a real game's rules)
+        if(options["inexhaustibleMines"].as<bool>())
+            ggs.setSelection(AddonId::INEXHAUSTIBLE_MINES, 1);
+        if(options.count("goldDeposits"))
+            ggs.setSelection(AddonId::CHANGE_GOLD_DEPOSITS, options["goldDeposits"].as<unsigned>());
+        if(options.count("maxRank"))
+            ggs.setSelection(AddonId::MAX_RANK, options["maxRank"].as<unsigned>());
+
         std::vector<unsigned> baselinePlayers;
         if(options.count("baseline"))
             baselinePlayers = options["baseline"].as<std::vector<unsigned>>();
 
-        HeadlessGame game(ggs, mapPath, ais, baselinePlayers);
+        // Team assignment, e.g. "0,1;2,3". Player -> Team (Team1, Team2, ...).
+        std::vector<Team> teams;
+        if(options.count("teams"))
+        {
+            const std::string spec = options["teams"].as<std::string>();
+            std::stringstream groups(spec);
+            std::string group;
+            unsigned teamIdx = 0;
+            while(std::getline(groups, group, ';'))
+            {
+                const Team team = static_cast<Team>(static_cast<uint8_t>(Team::Team1) + teamIdx);
+                std::stringstream members(group);
+                std::string idx;
+                while(std::getline(members, idx, ','))
+                {
+                    if(idx.empty())
+                        continue;
+                    const unsigned p = static_cast<unsigned>(std::stoul(idx));
+                    if(p >= teams.size())
+                        teams.resize(p + 1, Team::None);
+                    teams[p] = team;
+                }
+                ++teamIdx;
+            }
+        }
+
+        HeadlessGame game(ggs, mapPath, ais, baselinePlayers, teams);
         if(replay_path)
             game.RecordReplay(*replay_path, random_init);
         if(options.count("stats"))

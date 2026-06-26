@@ -8,6 +8,7 @@
 #include "Replay.h"
 #include "ai/AIPlayer.h"
 #include "gameTypes/AIInfo.h"
+#include "gameTypes/TeamTypes.h"
 #include <boost/filesystem.hpp>
 #include <chrono>
 #include <limits>
@@ -24,7 +25,7 @@ public:
     /// baselinePlayers: indices of players that should use the ORIGINAL (unimproved) AIJH behaviour.
     /// All other AIJH players use the improved strategy. Used for A/B testing.
     HeadlessGame(const GlobalGameSettings& ggs, const boost::filesystem::path& map, const std::vector<AI::Info>& ais,
-                 const std::vector<unsigned>& baselinePlayers = {});
+                 const std::vector<unsigned>& baselinePlayers = {}, const std::vector<Team>& teams = {});
     ~HeadlessGame();
 
     void Run(unsigned maxGF = std::numeric_limits<unsigned>::max());
@@ -53,6 +54,7 @@ private:
 
     boost::filesystem::path statsPath_;
     unsigned statsInterval_ = 0;
+    unsigned lastStatsGf_ = std::numeric_limits<unsigned>::max();
     FILE* statsFile_ = nullptr;
 
     unsigned lastReportGf_ = 0;

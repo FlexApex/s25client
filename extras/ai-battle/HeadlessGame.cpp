@@ -29,7 +29,7 @@
 #    include "Windows.h"
 #endif
 
-std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais);
+std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, const std::vector<Team>& teams);
 std::string ToString(const std::chrono::milliseconds& time);
 std::string HumanReadableNumber(unsigned num);
 
@@ -50,8 +50,8 @@ void printConsole(const char* fmt, ...);
 #endif
 
 HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, const std::vector<AI::Info>& ais,
-                           const std::vector<unsigned>& baselinePlayers)
-    : map_(map), game_(ggs, std::make_unique<EventManager>(0), GeneratePlayerInfo(ais)), world_(game_.world_),
+                           const std::vector<unsigned>& baselinePlayers, const std::vector<Team>& teams)
+    : map_(map), game_(ggs, std::make_unique<EventManager>(0), GeneratePlayerInfo(ais, teams)), world_(game_.world_),
       em_(*static_cast<EventManager*>(game_.em_.get()))
 {
     MapLoader loader(world_);
@@ -168,6 +168,9 @@ void HeadlessGame::WriteStatsHeader()
 void HeadlessGame::WriteStatsRow()
 {
     const unsigned gf = em_.GetCurrentGF();
+    if(gf == lastStatsGf_) // avoid duplicate final row when maxGF is a multiple of the interval
+        return;
+    lastStatsGf_ = gf;
     for(unsigned p = 0; p < world_.GetNumPlayers(); ++p)
     {
         const GamePlayer& pl = world_.GetPlayer(p);
@@ -305,7 +308,7 @@ void HeadlessGame::PrintState()
     lastReportGf_ = em_.GetCurrentGF();
 }
 
-std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais)
+std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, const std::vector<Team>& teams)
 {
     std::vector<PlayerInfo> ret;
     for(const AI::Info& ai : ais)
@@ -320,7 +323,7 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais)
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;
         }
         pi.nation = Nation::Romans;
-        pi.team = Team::None;
+        pi.team = (ret.size() < teams.size()) ? teams[ret.size()] : Team::None;
         ret.push_back(pi);
     }
     return ret;

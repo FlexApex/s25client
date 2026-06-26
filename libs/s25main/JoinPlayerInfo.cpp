@@ -54,7 +54,7 @@ std::string JoinPlayerInfo::MakeAIName(const AI::Info& aiInfo, unsigned playerId
     {
         switch(aiInfo.level)
         {
-            case AI::Level::Easy: name += _(" (easy)"); break;
+            case AI::Level::Easy: name += _(" (baseline AI)"); break;
             case AI::Level::Medium: name += _(" (medium)"); break;
             case AI::Level::Hard: name += _(" (hard)"); break;
         }

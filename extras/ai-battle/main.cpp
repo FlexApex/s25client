@@ -48,6 +48,9 @@ int main(int argc, char** argv)
         ("objective", po::value<std::string>()->default_value("domination"),"domination(default)|conquer")
         ("replay", po::value(&replay_path),"Filename to write replay to (optional)")
         ("save", po::value(&savegame_path),"Filename to write savegame to (optional)")
+        ("stats", po::value<std::string>(),"CSV file to write per-player trajectory stats to (optional)")
+        ("statsInterval", po::value<unsigned>()->default_value(1000),"Game-frame interval between stats rows")
+        ("baseline", po::value<std::vector<unsigned>>()->multitoken(),"Player index(es) using the ORIGINAL (unimproved) AI, for A/B testing")
         ("random_init", po::value(&random_init),"Seed value for the random number generator (optional)")
         ("random_ai_init", po::value(&random_ai_init),"Seed value for the AI random number generator (optional)")
         ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),"Maximum number of game frames to run (optional)")
@@ -117,9 +120,16 @@ int main(int argc, char** argv)
         }
 
         ggs.objective = GameObjective::TotalDomination;
-        HeadlessGame game(ggs, mapPath, ais);
+
+        std::vector<unsigned> baselinePlayers;
+        if(options.count("baseline"))
+            baselinePlayers = options["baseline"].as<std::vector<unsigned>>();
+
+        HeadlessGame game(ggs, mapPath, ais, baselinePlayers);
         if(replay_path)
             game.RecordReplay(*replay_path, random_init);
+        if(options.count("stats"))
+            game.EnableStats(options["stats"].as<std::string>(), options["statsInterval"].as<unsigned>());
 
         game.Run(options["maxGF"].as<unsigned>());
         game.Close();

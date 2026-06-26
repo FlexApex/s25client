@@ -14,6 +14,7 @@
 #include "ai/random.h"
 #include "files.h"
 #include "random/Random.h"
+#include "s25util/StringConversion.h"
 #include "s25util/System.h"
 
 #include <boost/filesystem.hpp>
@@ -55,7 +56,7 @@ static void loadAddonsFromIni(GlobalGameSettings& ggs, const bfs::path& iniPath)
     {
         try
         {
-            const auto id = static_cast<AddonId>(std::stoul(entry.first));
+            const auto id = static_cast<AddonId>(s25util::fromStringClassic<unsigned>(entry.first));
             const auto v = entry.second.get_value<unsigned>();
             ggs.setSelection(id, v);
             ++loaded;

@@ -45,6 +45,13 @@
 #include <type_traits>
 
 namespace {
+// Improved-AI early-aggression ramp (complaint #1: "too strong in the beginning"). While the AI has
+// fewer than EARLY_AGGRO_MIL_THRESHOLD military buildings it stretches the cadence between outgoing
+// attacks by EARLY_ATTACK_SLOWDOWN frames for each building it is still missing, then converges to
+// the configured cadence. This only delays offensives; garrisoning/defence/expansion are unchanged.
+constexpr unsigned EARLY_AGGRO_MIL_THRESHOLD = 30;
+constexpr unsigned EARLY_ATTACK_SLOWDOWN = 90;
+
 void HandleBuildingNote(AIEventManager& eventMgr, const BuildingNote& note)
 {
     std::unique_ptr<AIEvent::Base> ev;
@@ -161,10 +168,11 @@ static auto createResourceMaps(const AIInterface& aii, const AIMap& aiMap)
     return createResourceMaps(aii, aiMap, std::make_index_sequence<helpers::NumEnumValues_v<AIResource>>{});
 }
 
-AIPlayerJH::AIPlayerJH(const unsigned char playerId, const GameWorldBase& gwb, const AI::Level level)
+AIPlayerJH::AIPlayerJH(const unsigned char playerId, const GameWorldBase& gwb, const AI::Level level,
+                       const bool useImproved)
     : AIPlayer(playerId, gwb, level), UpgradeBldPos(MapPoint::Invalid()), resourceMaps(createResourceMaps(aii, aiMap)),
-      isInitGfCompleted(false), defeated(player.IsDefeated()), bldPlanner(std::make_unique<BuildingPlanner>(*this)),
-      construction(std::make_unique<AIConstruction>(*this))
+      isInitGfCompleted(false), defeated(player.IsDefeated()), useImproved_(useImproved),
+      bldPlanner(std::make_unique<BuildingPlanner>(*this)), construction(std::make_unique<AIConstruction>(*this))
 {
     InitNodes();
     InitResourceMaps();
@@ -257,7 +265,19 @@ void AIPlayerJH::RunGF(const unsigned gf, bool gfisnwf)
         bldPlanner->UpdateBuildingsWanted(*this);
     ExecuteAIJob();
 
-    if((gf + playerId * 17) % attack_interval == 0)
+    // Complaint #1 (gentler early game): the improved AI throttles OUTGOING attacks while its
+    // military is still young, converging to the configured cadence as it matures. Defence,
+    // recruiting of garrisons and territorial expansion are unaffected - only the rate at which it
+    // sends offensives against opponents is reduced early, giving a human room to develop.
+    unsigned effAttackInterval = attack_interval;
+    if(useImproved_)
+    {
+        const unsigned milBlds = static_cast<unsigned>(aii.GetMilitaryBuildings().size());
+        if(milBlds < EARLY_AGGRO_MIL_THRESHOLD)
+            effAttackInterval = attack_interval + (EARLY_AGGRO_MIL_THRESHOLD - milBlds) * EARLY_ATTACK_SLOWDOWN;
+    }
+
+    if((gf + playerId * 17) % effAttackInterval == 0)
     {
         // CheckExistingMilitaryBuildings();
         TryToAttack();
@@ -267,7 +287,7 @@ void AIPlayerJH::RunGF(const unsigned gf, bool gfisnwf)
         MilUpgradeOptim();
     }
 
-    if((gf + 41 + playerId * 17) % attack_interval == 0)
+    if((gf + 41 + playerId * 17) % effAttackInterval == 0)
     {
         if(ggs.isEnabled(AddonId::SEA_ATTACK))
             TrySeaAttack();
@@ -1587,6 +1607,7 @@ void AIPlayerJH::TryToAttack()
         }
 
         aii.Attack(dest, attackersCount, true);
+        ++numAttacksLaunched_;
         return;
     }
 }
@@ -2414,7 +2435,18 @@ void AIPlayerJH::AdjustSettings()
 
     // Set military settings to some currently required values
     MilitarySettings milSettings;
-    milSettings[0] = 10;
+    milSettings[0] = 10; // recruiting ratio (population -> soldiers): baseline always recruits at max
+    if(useImproved_)
+    {
+        // Complaint #1 (gentler early game) + economy synergy: recruit fewer soldiers from the
+        // population during the opening, ramping quickly back to full recruiting once the base is
+        // established (~10 military buildings). This softens the early military spike a human faces
+        // and leaves more carriers/workers for the economy early, WITHOUT permanently weakening the
+        // late-game army (full recruiting resumes, now fed by a larger economy -> tougher late).
+        // Garrisons still fill (occupation settings below are unchanged).
+        const unsigned milBlds = static_cast<unsigned>(aii.GetMilitaryBuildings().size());
+        milSettings[0] = std::min<unsigned>(10u, 5u + milBlds / 2u);
+    }
     milSettings[1] = HasFrontierBuildings() ?
                        5 :
                        0; // if we have a front send strong soldiers first else weak first to make upgrading easier
@@ -2432,8 +2464,8 @@ void AIPlayerJH::AdjustSettings()
     milSettings[5] = CalcMilSettings(); // inland 1bar min 50% max 100% depending on how many soldiers are available
     milSettings[7] = 8;                 // front: 100%
     if(player.GetMilitarySetting(5) != milSettings[5] || player.GetMilitarySetting(6) != milSettings[6]
-       || player.GetMilitarySetting(4) != milSettings[4]
-       || player.GetMilitarySetting(1) != milSettings[1]) // only send the command if we want to change something
+       || player.GetMilitarySetting(4) != milSettings[4] || player.GetMilitarySetting(1) != milSettings[1]
+       || player.GetMilitarySetting(0) != milSettings[0]) // only send the command if we want to change something
         aii.ChangeMilitary(milSettings);
 }
 

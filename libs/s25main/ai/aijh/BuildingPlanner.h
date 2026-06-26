@@ -46,5 +46,8 @@ private:
 
     void RefreshBuildingNums(const AIPlayerJH& aijh);
     bool CalcIsExpansionRequired(AIPlayerJH& aijh, bool recalc) const;
+    /// Improved strategy only: scale the production chain with the actual economy so the AI keeps
+    /// growing instead of plateauing at small hardcoded ceilings. Only ever raises wants.
+    void ApplyImprovedScaling(const AIPlayerJH& aijh, unsigned numMilitaryBlds, unsigned foodusers);
 };
 } // namespace AIJH

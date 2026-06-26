@@ -21,7 +21,10 @@ class EventManager;
 class HeadlessGame
 {
 public:
-    HeadlessGame(const GlobalGameSettings& ggs, const boost::filesystem::path& map, const std::vector<AI::Info>& ais);
+    /// baselinePlayers: indices of players that should use the ORIGINAL (unimproved) AIJH behaviour.
+    /// All other AIJH players use the improved strategy. Used for A/B testing.
+    HeadlessGame(const GlobalGameSettings& ggs, const boost::filesystem::path& map, const std::vector<AI::Info>& ais,
+                 const std::vector<unsigned>& baselinePlayers = {});
     ~HeadlessGame();
 
     void Run(unsigned maxGF = std::numeric_limits<unsigned>::max());
@@ -30,17 +33,27 @@ public:
     void RecordReplay(const boost::filesystem::path& path, unsigned random_init);
     void SaveGame(const boost::filesystem::path& path) const;
 
+    /// Write a CSV row per player every `interval` game frames to `path` (machine-readable trajectory log).
+    void EnableStats(const boost::filesystem::path& path, unsigned interval);
+
 private:
     void PrintState();
+    void WriteStatsHeader();
+    void WriteStatsRow();
 
     boost::filesystem::path map_;
     Game game_;
     GameWorld& world_;
     EventManager& em_;
     std::vector<std::unique_ptr<AIPlayer>> players_;
+    std::vector<bool> improved_;
 
     Replay replay_;
     boost::filesystem::path replayPath_;
+
+    boost::filesystem::path statsPath_;
+    unsigned statsInterval_ = 0;
+    FILE* statsFile_ = nullptr;
 
     unsigned lastReportGf_ = 0;
     std::chrono::steady_clock::time_point gameStartTime_;

@@ -35,12 +35,17 @@ Subscription recordBQsToUpdate(const GameWorldBase& gw, std::vector<MapPoint>& b
 class AIPlayerJH final : public AIPlayer
 {
 public:
-    AIPlayerJH(unsigned char playerId, const GameWorldBase& gwb, AI::Level level);
+    AIPlayerJH(unsigned char playerId, const GameWorldBase& gwb, AI::Level level, bool useImproved = true);
     ~AIPlayerJH() override;
 
     AIInterface& GetInterface() { return aii; }
     const AIInterface& GetInterface() const { return aii; }
     const GameWorldBase& GetWorld() const { return gwb; }
+    /// Whether the improved economy/military strategy is active (vs. the original baseline behaviour).
+    /// Used to gate all AI improvements so the original behaviour can be reproduced for A/B testing.
+    bool IsImproved() const { return useImproved_; }
+    /// Number of attacks this AI has launched (diagnostic, used to measure early aggression).
+    unsigned GetNumAttacksLaunched() const { return numAttacksLaunched_; }
     // Required by the AIJobs:
     AIConstruction& GetConstruction() { return *construction; }
     const BuildingPlanner& GetBldPlanner() const { return *bldPlanner; }
@@ -232,6 +237,10 @@ private:
     int isInitGfCompleted;
     /// resigned yes/no
     bool defeated;
+    /// Use improved economy/military strategy (default) or original baseline behaviour (for A/B testing)
+    bool useImproved_;
+    /// Count of attacks launched (diagnostic for measuring early aggression)
+    unsigned numAttacksLaunched_ = 0;
     AIEventManager eventManager;
     std::unique_ptr<BuildingPlanner> bldPlanner;
     std::unique_ptr<AIConstruction> construction;

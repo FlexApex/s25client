@@ -10,6 +10,7 @@
 #include "PlayerInfo.h"
 #include "Savegame.h"
 #include "ai/aijh/AIPlayerJH.h"
+#include "ai/llm/AIPlayerLlm.h"
 #include "factories/AIFactory.h"
 #include "network/PlayerGameCommands.h"
 #include "world/GameWorld.h"
@@ -180,7 +181,8 @@ void HeadlessGame::WriteStatsRow()
         const BuildingRegister& br = pl.GetBuildingRegister();
         const auto nb = [&](BuildingType bt) { return br.GetBuildings(bt).size(); };
         const auto* jh = dynamic_cast<const AIJH::AIPlayerJH*>(players_[p].get());
-        const unsigned attacks = jh ? jh->GetNumAttacksLaunched() : 0u;
+        const auto* llm = dynamic_cast<const AIllm::AIPlayerLlm*>(players_[p].get());
+        const unsigned attacks = jh ? jh->GetNumAttacksLaunched() : (llm ? llm->GetNumAttacksLaunched() : 0u);
         std::fprintf(statsFile_,
                      "%u,%u,%s,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%zu,%zu,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
                      "%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%u\n",
@@ -319,6 +321,7 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, con
         switch(ai.type)
         {
             case AI::Type::Default: pi.name = "AIJH " + std::to_string(ret.size()); break;
+            case AI::Type::Llm: pi.name = "LLM " + std::to_string(ret.size()); break;
             case AI::Type::Dummy:
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;
         }

@@ -13,6 +13,9 @@
 .DS_Store
 .vscode
 .vs
+# Local LLM-AI endpoint config (secrets) - see libs/s25main/ai/llm/README.md
+.env
+.env.*
 .cache
 /S2
 /build

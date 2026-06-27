@@ -43,6 +43,11 @@ public:
     /// Write a CSV row per player every `interval` game frames to `path` (machine-readable trajectory log).
     void EnableStats(const boost::filesystem::path& path, unsigned interval);
 
+    /// One-shot human-readable dump of every AI player's food chain + mine working-state (diagnostic).
+    /// Prints food-chain building counts/productivity, per-mine idle/food state, and food-ware stocks so
+    /// one can see where a stalled mining economy breaks (no farms? no flour? food not reaching mines?).
+    void AnalyzeEconomy() const;
+
 private:
     /// Delegated-to by the savegame constructor (loads the file before game_ is built).
     explicit HeadlessGame(std::unique_ptr<Savegame> save);

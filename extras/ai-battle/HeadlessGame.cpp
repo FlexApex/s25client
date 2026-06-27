@@ -16,6 +16,7 @@
 #include "Savegame.h"
 #include "SerializedGameData.h"
 #include "factories/GameCommandFactory.h"
+#include "buildings/nobUsual.h"
 #include "factories/AIFactory.h"
 #include "network/PlayerGameCommands.h"
 #include "world/GameWorld.h"
@@ -301,6 +302,82 @@ void HeadlessGame::WriteStatsRow()
                      pl.GetBuildingRegister().GetBuildingSites().size());
     }
     std::fflush(statsFile_);
+}
+
+void HeadlessGame::AnalyzeEconomy() const
+{
+    // Per-building-type roll-up: count, how many are idle (productivity 0), average productivity,
+    // and (for consumers like mines) how much input food they currently hold.
+    const auto roll = [&](const GamePlayer& pl, BuildingType bt) {
+        const auto& blds = pl.GetBuildingRegister().GetBuildings(bt);
+        unsigned n = 0, idle = 0, noWorker = 0, prodSum = 0, foodOnHand = 0;
+        for(const nobUsual* b : blds)
+        {
+            ++n;
+            const unsigned p = b->GetProductivity();
+            prodSum += p;
+            if(p == 0)
+                ++idle;
+            if(!b->HasWorker())
+                ++noWorker;
+            foodOnHand += b->GetNumWares(0) + b->GetNumWares(1) + b->GetNumWares(2);
+        }
+        return std::array<unsigned, 5>{n, idle, noWorker, n ? prodSum / n : 0, foodOnHand};
+    };
+    const auto line = [&](const GamePlayer& pl, const char* label, BuildingType bt, bool showFood) {
+        const auto r = roll(pl, bt);
+        if(r[0] == 0)
+            return;
+        bnw::cout << "    " << label << ": " << r[0] << "  idle=" << r[1] << " noWorker=" << r[2]
+                  << " avgProd=" << r[3];
+        if(showFood)
+            bnw::cout << " foodOnHand=" << r[4];
+        bnw::cout << '\n';
+    };
+
+    bnw::cout << "\n==================== ECONOMY ANALYSIS (loaded state, GF=" << em_.GetCurrentGF()
+              << ") ====================\n";
+    for(unsigned p = 0; p < world_.GetNumPlayers(); ++p)
+    {
+        const GamePlayer& pl = world_.GetPlayer(p);
+        const AI::Info& aiInfo = pl.aiInfo;
+        if(aiInfo.type != AI::Type::Default)
+            continue; // skip humans / dummies
+        const Inventory& inv = pl.GetInventory();
+        const MapPoint hq = pl.GetHQPos();
+        bnw::cout << "\n-- player " << p << " '" << pl.name << "' aiType=" << static_cast<unsigned>(aiInfo.type)
+                  << " HQ=(" << hq.x << "," << hq.y << ")" << (pl.IsDefeated() ? " [defeated]" : "") << " --\n";
+
+        bnw::cout << "  FOOD PRODUCTION:\n";
+        line(pl, "Farm        ", BuildingType::Farm, false);
+        line(pl, "Mill        ", BuildingType::Mill, false);
+        line(pl, "Bakery      ", BuildingType::Bakery, false);
+        line(pl, "PigFarm     ", BuildingType::PigFarm, false);
+        line(pl, "Slaughterhse", BuildingType::Slaughterhouse, false);
+        line(pl, "Fishery     ", BuildingType::Fishery, false);
+        line(pl, "Hunter      ", BuildingType::Hunter, false);
+        line(pl, "Well        ", BuildingType::Well, false);
+        line(pl, "Brewery     ", BuildingType::Brewery, false);
+        line(pl, "DonkeyBreedr", BuildingType::DonkeyBreeder, false);
+        line(pl, "Charburner  ", BuildingType::Charburner, false);
+
+        bnw::cout << "  MINES (consume food):\n";
+        line(pl, "CoalMine    ", BuildingType::CoalMine, true);
+        line(pl, "IronMine    ", BuildingType::IronMine, true);
+        line(pl, "GoldMine    ", BuildingType::GoldMine, true);
+        line(pl, "GraniteMine ", BuildingType::GraniteMine, true);
+
+        bnw::cout << "  WARE STOCKS:  grain=" << inv.goods[GoodType::Grain] << " flour=" << inv.goods[GoodType::Flour]
+                  << " bread=" << inv.goods[GoodType::Bread] << " meat=" << inv.goods[GoodType::Meat]
+                  << " ham=" << inv.goods[GoodType::Ham] << " fish=" << inv.goods[GoodType::Fish]
+                  << " water=" << inv.goods[GoodType::Water] << " beer=" << inv.goods[GoodType::Beer] << '\n';
+        bnw::cout << "  WORKERS/TOOLS: farmer=" << inv.people[Job::Farmer] << " scythe=" << inv.goods[GoodType::Scythe]
+                  << " | miner=" << inv.people[Job::Miner] << " pickaxe=" << inv.goods[GoodType::PickAxe]
+                  << " | baker=" << inv.people[Job::Baker] << " butcher=" << inv.people[Job::Butcher]
+                  << " miller=" << inv.people[Job::Miller] << " fisher=" << inv.people[Job::Fisher]
+                  << " helpers=" << inv.people[Job::Helper] << '\n';
+    }
+    bnw::cout << "\n=================================================================================\n\n";
 }
 
 void HeadlessGame::Close()

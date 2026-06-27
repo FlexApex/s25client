@@ -49,5 +49,9 @@ private:
     /// Improved strategy only: scale the production chain with the actual economy so the AI keeps
     /// growing instead of plateauing at small hardcoded ceilings. Only ever raises wants.
     void ApplyImprovedScaling(const AIPlayerJH& aijh, unsigned numMilitaryBlds, unsigned foodusers);
+    /// Improved strategy only: scale STONE production (quarries + granite mines) with construction
+    /// demand so the AI does not starve on stone (and stall all building) on stone-poor maps. Unlike
+    /// ApplyImprovedScaling this must run *when stone is low*, so it is not behind a surplus gate.
+    void ApplyImprovedStoneSupply(const AIPlayerJH& aijh, unsigned numMilitaryBlds);
 };
 } // namespace AIJH

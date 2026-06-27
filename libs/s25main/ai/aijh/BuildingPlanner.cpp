@@ -366,7 +366,10 @@ void BuildingPlanner::UpdateBuildingsWanted(const AIPlayerJH& aijh)
         // and the dependent buildings (wells/mills/bakeries/breweries) are derived from *actual*
         // building counts, so raising these primary drivers converges safely over the next ticks.
         if(aijh.IsImproved())
+        {
+            ApplyImprovedStoneSupply(aijh, numMilitaryBlds);
             ApplyImprovedScaling(aijh, numMilitaryBlds, foodusers);
+        }
     }
     if(aijh.ggs.GetMaxMilitaryRank() == 0)
     {
@@ -437,6 +440,48 @@ void BuildingPlanner::ApplyImprovedScaling(const AIPlayerJH& aijh, const unsigne
         if(aijh.ggs.GetMaxMilitaryRank() > 0)
             raise(BuildingType::GoldMine, std::min<unsigned>(smelters / 2 + 1, 5));
     }
+}
+
+void BuildingPlanner::ApplyImprovedStoneSupply(const AIPlayerJH& aijh, const unsigned numMilitaryBlds)
+{
+    // Stone gates ALL construction: every building needs stone, big ones a lot. The baseline caps
+    // quarries at ~6 and treats granite mining as a rare fallback (numMilitaryBlds/15+1, only when
+    // quarries are unplaceable). On stone-poor maps - sparse/spread surface stone, plus quarries
+    // DEPLETE - that starves the whole economy and every building crawls (observed: ~140 buildings,
+    // 37 stone, sites stuck). So scale stone production with construction demand and lean on granite
+    // mines, which do not run dry (never with INEXHAUSTIBLE_MINES). Only ever raises wants.
+    const Inventory& inventory = aijh.player.GetInventory();
+    const unsigned stoneStock = inventory.goods[GoodType::Stones];
+    const unsigned numSites =
+      static_cast<unsigned>(aijh.player.GetBuildingRegister().GetBuildingSites().size());
+
+    // Target number of stone producers (quarries + granite mines), scaled to the empire and ramped
+    // when the stockpile is low. When stone is plentiful we leave the baseline wants untouched.
+    unsigned stoneTarget;
+    if(stoneStock < 40)
+        stoneTarget = numMilitaryBlds / 5 + 4;
+    else if(stoneStock < 120)
+        stoneTarget = numMilitaryBlds / 8 + 3;
+    else if(stoneStock < 300)
+        stoneTarget = numMilitaryBlds / 12 + 2;
+    else
+        return; // plenty of stone; baseline quarry/granite wants are fine
+    if(numSites > 12 && stoneStock < 150)
+        stoneTarget += 2; // construction is backing up on stone -> push harder
+
+    // Quarries first (cheap surface stone, no miner/food cost), bounded by available stonemasons.
+    // Over-wanting is harmless: placement only succeeds where surface stone actually exists.
+    const unsigned quarryStaff = inventory.people[Job::Stonemason] + inventory.goods[GoodType::PickAxe];
+    buildingsWanted[BuildingType::Quarry] =
+      std::max(buildingsWanted[BuildingType::Quarry], std::min(stoneTarget, quarryStaff));
+
+    // Granite mines are the sustainable backbone (they don't deplete with inexhaustible mines). Cover
+    // whatever the quarries don't, bounded by the shared miner pool so we don't starve coal/iron.
+    const unsigned haveQuarry = GetNumBuildings(BuildingType::Quarry);
+    const unsigned mineStaff = inventory.people[Job::Miner] + inventory.goods[GoodType::PickAxe];
+    const unsigned graniteNeed = (stoneTarget > haveQuarry) ? stoneTarget - haveQuarry : 1u;
+    buildingsWanted[BuildingType::GraniteMine] =
+      std::max(buildingsWanted[BuildingType::GraniteMine], std::min(graniteNeed, mineStaff));
 }
 
 int BuildingPlanner::GetNumAdditionalBuildingsWanted(BuildingType type) const

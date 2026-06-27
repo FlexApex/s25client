@@ -53,5 +53,11 @@ private:
     /// demand so the AI does not starve on stone (and stall all building) on stone-poor maps. Unlike
     /// ApplyImprovedScaling this must run *when stone is low*, so it is not behind a surplus gate.
     void ApplyImprovedStoneSupply(const AIPlayerJH& aijh, unsigned numMilitaryBlds);
+    /// Improved strategy only: scale FOOD production with mine demand so mines do not idle for lack of
+    /// food. The baseline freezes farms at ~half the available farmers and lets grain-eating charburners
+    /// starve the bread chain. Fires only when mines are under-fed, so it is no-op on well-fed/space-poor
+    /// maps; bounded by farmer/empire size and graceful placement so it can't over-build where there is
+    /// no farmland.
+    void ApplyImprovedFoodSupply(const AIPlayerJH& aijh, unsigned numMilitaryBlds);
 };
 } // namespace AIJH

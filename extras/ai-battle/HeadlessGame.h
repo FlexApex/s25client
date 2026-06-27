@@ -12,11 +12,14 @@
 #include <boost/filesystem.hpp>
 #include <chrono>
 #include <limits>
+#include <memory>
 #include <vector>
 
 class GameWorld;
 class GlobalGameSettings;
 class EventManager;
+class Savegame;
+class GameInterface;
 
 /// Run an ai-only game without user-interface.
 class HeadlessGame
@@ -26,6 +29,9 @@ public:
     /// All other AIJH players use the improved strategy. Used for A/B testing.
     HeadlessGame(const GlobalGameSettings& ggs, const boost::filesystem::path& map, const std::vector<AI::Info>& ais,
                  const std::vector<unsigned>& baselinePlayers = {}, const std::vector<Team>& teams = {});
+    /// Continue a saved game: settings, players and world state all come from the .sav file. AI players
+    /// are recreated from each slot's stored aiInfo, so the same AIs resume from the snapshot.
+    explicit HeadlessGame(const boost::filesystem::path& savegamePath);
     ~HeadlessGame();
 
     void Run(unsigned maxGF = std::numeric_limits<unsigned>::max());
@@ -38,6 +44,9 @@ public:
     void EnableStats(const boost::filesystem::path& path, unsigned interval);
 
 private:
+    /// Delegated-to by the savegame constructor (loads the file before game_ is built).
+    explicit HeadlessGame(std::unique_ptr<Savegame> save);
+
     void PrintState();
     void WriteStatsHeader();
     void WriteStatsRow();
@@ -48,6 +57,10 @@ private:
     EventManager& em_;
     std::vector<std::unique_ptr<AIPlayer>> players_;
     std::vector<bool> improved_;
+    bool fromSave_ = false;
+    /// No-op GameInterface so world->GetGameInterface() callbacks (e.g. for human player slots in a
+    /// loaded savegame) don't dereference null in this headless, client-less runner.
+    std::unique_ptr<GameInterface> gameInterface_;
 
     Replay replay_;
     boost::filesystem::path replayPath_;

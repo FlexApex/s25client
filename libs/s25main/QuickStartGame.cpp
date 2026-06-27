@@ -42,6 +42,8 @@ std::vector<AI::Info> ParseAIOptions(const std::vector<std::string>& aiOptions)
         AI::Type type = AI::Type::Dummy;
         if(aiOption_lower == "aijh")
             type = AI::Type::Default;
+        else if(aiOption_lower == "apexai" || aiOption_lower == "apex")
+            type = AI::Type::ApexAI;
         else if(aiOption_lower == "llm")
             type = AI::Type::Llm;
         else if(aiOption_lower != "dummy")

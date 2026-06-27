@@ -45,13 +45,6 @@
 #include <type_traits>
 
 namespace {
-// Improved-AI early-aggression ramp (complaint #1: "too strong in the beginning"). While the AI has
-// fewer than EARLY_AGGRO_MIL_THRESHOLD military buildings it stretches the cadence between outgoing
-// attacks by EARLY_ATTACK_SLOWDOWN frames for each building it is still missing, then converges to
-// the configured cadence. This only delays offensives; garrisoning/defence/expansion are unchanged.
-constexpr unsigned EARLY_AGGRO_MIL_THRESHOLD = 30;
-constexpr unsigned EARLY_ATTACK_SLOWDOWN = 90;
-
 void HandleBuildingNote(AIEventManager& eventMgr, const BuildingNote& note)
 {
     std::unique_ptr<AIEvent::Base> ev;
@@ -168,10 +161,9 @@ static auto createResourceMaps(const AIInterface& aii, const AIMap& aiMap)
     return createResourceMaps(aii, aiMap, std::make_index_sequence<helpers::NumEnumValues_v<AIResource>>{});
 }
 
-AIPlayerJH::AIPlayerJH(const unsigned char playerId, const GameWorldBase& gwb, const AI::Level level,
-                       const bool useImproved)
+AIPlayerJH::AIPlayerJH(const unsigned char playerId, const GameWorldBase& gwb, const AI::Level level)
     : AIPlayer(playerId, gwb, level), UpgradeBldPos(MapPoint::Invalid()), resourceMaps(createResourceMaps(aii, aiMap)),
-      isInitGfCompleted(false), defeated(player.IsDefeated()), useImproved_(useImproved),
+      isInitGfCompleted(false), defeated(player.IsDefeated()),
       bldPlanner(std::make_unique<BuildingPlanner>(*this)), construction(std::make_unique<AIConstruction>(*this))
 {
     InitNodes();
@@ -223,6 +215,12 @@ AIPlayerJH::AIPlayerJH(const unsigned char playerId, const GameWorldBase& gwb, c
 
 AIPlayerJH::~AIPlayerJH() = default;
 
+void AIPlayerJH::RefreshBuildingsWanted()
+{
+    bldPlanner->UpdateBuildingsWanted(*this);
+    RefineBuildingsWanted(); // subclass hook (base: no-op)
+}
+
 /// Wird jeden GF aufgerufen und die KI kann hier entsprechende Handlungen vollziehen
 void AIPlayerJH::RunGF(const unsigned gf, bool gfisnwf)
 {
@@ -262,20 +260,12 @@ void AIPlayerJH::RunGF(const unsigned gf, bool gfisnwf)
 
     // LOG.write(("ai doing stuff %i \n",playerId);
     if(gf % 100 == 0)
-        bldPlanner->UpdateBuildingsWanted(*this);
+        RefreshBuildingsWanted();
     ExecuteAIJob();
 
-    // Complaint #1 (gentler early game): the improved AI throttles OUTGOING attacks while its
-    // military is still young, converging to the configured cadence as it matures. Defence,
-    // recruiting of garrisons and territorial expansion are unaffected - only the rate at which it
-    // sends offensives against opponents is reduced early, giving a human room to develop.
-    unsigned effAttackInterval = attack_interval;
-    if(useImproved_)
-    {
-        const unsigned milBlds = static_cast<unsigned>(aii.GetMilitaryBuildings().size());
-        if(milBlds < EARLY_AGGRO_MIL_THRESHOLD)
-            effAttackInterval = attack_interval + (EARLY_AGGRO_MIL_THRESHOLD - milBlds) * EARLY_ATTACK_SLOWDOWN;
-    }
+    // Cadence between outgoing attacks. Base AIJH uses the configured interval; subclasses may stretch
+    // it early (see AIPlayerApex) to ease up on a developing human opponent.
+    const unsigned effAttackInterval = GetEffectiveAttackInterval();
 
     if((gf + playerId * 17) % effAttackInterval == 0)
     {
@@ -332,7 +322,7 @@ void AIPlayerJH::OnChatMessage(unsigned /*sendPlayerId*/, ChatDestination, const
 
 void AIPlayerJH::PlanNewBuildings(const unsigned gf)
 {
-    bldPlanner->UpdateBuildingsWanted(*this);
+    RefreshBuildingsWanted();
 
     // pick a random storehouse and try to build one of these buildings around it (checks if we actually want more of
     // the building type)
@@ -1051,7 +1041,7 @@ void AIPlayerJH::HandleNewMilitaryBuildingOccupied(const MapPoint pt)
 {
     // kill bad flags we find
     RemoveAllUnusedRoads(pt);
-    bldPlanner->UpdateBuildingsWanted(*this);
+    RefreshBuildingsWanted();
     const auto* mil = gwb.GetSpecObj<nobMilitary>(pt);
     if(!mil)
         return;
@@ -2435,18 +2425,9 @@ void AIPlayerJH::AdjustSettings()
 
     // Set military settings to some currently required values
     MilitarySettings milSettings;
-    milSettings[0] = 10; // recruiting ratio (population -> soldiers): baseline always recruits at max
-    if(useImproved_)
-    {
-        // Complaint #1 (gentler early game) + economy synergy: recruit fewer soldiers from the
-        // population during the opening, ramping quickly back to full recruiting once the base is
-        // established (~10 military buildings). This softens the early military spike a human faces
-        // and leaves more carriers/workers for the economy early, WITHOUT permanently weakening the
-        // late-game army (full recruiting resumes, now fed by a larger economy -> tougher late).
-        // Garrisons still fill (occupation settings below are unchanged).
-        const unsigned milBlds = static_cast<unsigned>(aii.GetMilitaryBuildings().size());
-        milSettings[0] = std::min<unsigned>(10u, 5u + milBlds / 2u);
-    }
+    // recruiting ratio (population -> soldiers). Base AIJH always recruits at max; subclasses may ramp
+    // it (see AIPlayerApex) to spend less population on soldiers during the opening.
+    milSettings[0] = GetRecruitingRatio();
     milSettings[1] = HasFrontierBuildings() ?
                        5 :
                        0; // if we have a front send strong soldiers first else weak first to make upgrading easier

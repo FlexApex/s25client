@@ -369,6 +369,7 @@ void BuildingPlanner::UpdateBuildingsWanted(const AIPlayerJH& aijh)
         {
             ApplyImprovedStoneSupply(aijh, numMilitaryBlds);
             ApplyImprovedScaling(aijh, numMilitaryBlds, foodusers);
+            ApplyImprovedFoodSupply(aijh, numMilitaryBlds);
         }
     }
     if(aijh.ggs.GetMaxMilitaryRank() == 0)
@@ -482,6 +483,75 @@ void BuildingPlanner::ApplyImprovedStoneSupply(const AIPlayerJH& aijh, const uns
     const unsigned graniteNeed = (stoneTarget > haveQuarry) ? stoneTarget - haveQuarry : 1u;
     buildingsWanted[BuildingType::GraniteMine] =
       std::max(buildingsWanted[BuildingType::GraniteMine], std::min(graniteNeed, mineStaff));
+}
+
+void BuildingPlanner::ApplyImprovedFoodSupply(const AIPlayerJH& aijh, const unsigned numMilitaryBlds)
+{
+    // Food gates mining: a miner eats bread/meat/fish, and when it runs out the mine idles (observed:
+    // 5 of 7 coal mines idle, foodOnHand 0, while the AI sat on a big IDLE farmer reserve and refused
+    // to build more farms). Two baseline defects cause it:
+    //  (1) Farm want = min(scythe + people[Farmer], foodusers+3). GetInventory().people counts only the
+    //      IDLE (warehoused) farmers; deploying a farm consumes one, so the want's fixed point is
+    //      built==idle -> it deploys ~half its farmers and parks the rest forever.
+    //  (2) Charburners consume GRAIN (Wood+Grain->Coal); a coal shortage makes the baseline build many,
+    //      and they then steal the grain the bread chain needs -> the mine starvation feeds itself.
+    // This raises the food chain toward what the mines need, deploying the parked farmers. It only ever
+    // raises wants (except clamping charburner growth) and is bounded so it stays safe on cramped maps.
+    const Inventory& inventory = aijh.player.GetInventory();
+
+    // The food consumers we must sustain: every mine eats table food.
+    const unsigned numMines = GetNumBuildings(BuildingType::CoalMine) + GetNumBuildings(BuildingType::IronMine)
+                              + GetNumBuildings(BuildingType::GoldMine) + GetNumBuildings(BuildingType::GraniteMine);
+    if(numMines == 0)
+        return; // nothing to feed -> baseline food wants are fine
+
+    // Are the mines actually under-fed? Enough table-food producers AND a stock buffer -> leave baseline
+    // alone (keeps already-healthy economies, and water/fish-fed maps, unchanged - fish counts here).
+    const unsigned numFoodProducers = GetNumBuildings(BuildingType::Bakery)
+                                      + GetNumBuildings(BuildingType::Slaughterhouse)
+                                      + GetNumBuildings(BuildingType::Hunter) + GetNumBuildings(BuildingType::Fishery);
+    const unsigned tableFood = inventory.goods[GoodType::Bread] + inventory.goods[GoodType::Meat]
+                               + inventory.goods[GoodType::Ham] + inventory.goods[GoodType::Fish];
+    if(numFoodProducers * 2 >= numMines && tableFood >= numMines)
+        return;
+
+    const auto raise = [&](BuildingType bld, unsigned to) {
+        buildingsWanted[bld] = std::max(buildingsWanted[bld], to);
+    };
+
+    // --- Farms: deploy the parked farmer reserve the baseline leaves idle. Count the farmers ALREADY
+    // working in farms (built) on top of the idle+scythe pool so the want can actually exceed today's
+    // farm count. Bound by mine demand and, for cramped/boxed-in maps, by empire size; where there is
+    // no spare farmland the placement just fails, so this never over-builds there.
+    const unsigned builtFarms = GetNumBuildings(BuildingType::Farm);
+    const unsigned farmerCapacity = builtFarms + inventory.people[Job::Farmer] + inventory.goods[GoodType::Scythe];
+    const unsigned empireCeil = numMilitaryBlds / 2 + 4; // space-aware ceiling
+    raise(BuildingType::Farm, std::min({numMines, farmerCapacity, empireCeil}));
+
+    // --- Mills + bakeries: turn the extra grain into bread (the miners' staple) so it reaches the
+    // mines. Bounded by their own workers/tools; over-wanting is harmless (placement/staffing gate it).
+    raise(BuildingType::Mill,
+          std::min<unsigned>(numMines * 2 / 3 + 1,
+                             GetNumBuildings(BuildingType::Mill) + inventory.people[Job::Miller] + 1));
+    raise(BuildingType::Bakery,
+          std::min<unsigned>(buildingsWanted[BuildingType::Mill],
+                             GetNumBuildings(BuildingType::Bakery) + inventory.people[Job::Baker]
+                               + inventory.goods[GoodType::Rollingpin] + 1));
+
+    // --- Fishery: alternative table food that needs no farmland - the fix's answer for water-rich /
+    // farmland-poor maps. Placement gates it to the coast, so it only takes where the map supports it.
+    raise(BuildingType::Fishery,
+          std::min<unsigned>(numMines, GetNumBuildings(BuildingType::Fishery) + inventory.people[Job::Fisher]
+                                         + inventory.goods[GoodType::RodAndLine]));
+
+    // --- Wells: bread/pig/brewery all need water; keep it ahead of the bakeries we just asked for.
+    raise(BuildingType::Well, buildingsWanted[BuildingType::Bakery] + GetNumBuildings(BuildingType::PigFarm)
+                                + GetNumBuildings(BuildingType::Brewery));
+
+    // --- Charburners: they burn grain. While food is short, stop adding them so grain flows to the
+    // bread chain instead of into a coal substitute that starves the mines it is meant to help.
+    buildingsWanted[BuildingType::Charburner] =
+      std::min(buildingsWanted[BuildingType::Charburner], GetNumBuildings(BuildingType::Charburner));
 }
 
 int BuildingPlanner::GetNumAdditionalBuildingsWanted(BuildingType type) const

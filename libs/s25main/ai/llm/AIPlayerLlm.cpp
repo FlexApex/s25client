@@ -85,8 +85,60 @@ bool AIPlayerLlm::HasGold() const
     return ggs.getSelection(AddonId::CHANGE_GOLD_DEPOSITS) == 0;
 }
 
+MapPoint AIPlayerLlm::AnchorPos() const
+{
+    if(const nobHQ* hq = aii.GetHeadquarter())
+        return hq->GetPos();
+    if(!aii.GetStorehouses().empty())
+        return aii.GetStorehouses().front()->GetPos();
+    if(!aii.GetMilitaryBuildings().empty())
+        return aii.GetMilitaryBuildings().front()->GetPos();
+    return MapPoint::Invalid();
+}
+
+Direction AIPlayerLlm::SectorOf(const MapPoint pt) const
+{
+    // Integer wrap-delta bucket (SPEC §5.2; D5). Duplicated from LlmStrategist's sectorOf so the
+    // executor and the map digest agree on geometry without a shared symbol. No trig, no
+    // GetShortestVector (MapBase lacks it) -> deterministic / replay-safe. Caller guarantees a valid
+    // anchor, so this is only reached with a real HQ/storehouse origin.
+    const MapPoint hq = AnchorPos();
+    const MapExtent sz = gwb.GetSize();
+    auto wrap = [](int d, int span) {
+        if(d > span / 2)
+            d -= span;
+        if(d < -span / 2)
+            d += span;
+        return d;
+    };
+    const int dx = wrap(int(pt.x) - int(hq.x), sz.x);
+    const int dy = wrap(int(pt.y) - int(hq.y), sz.y);
+    const int yy = dy * 2; // hex rows are ~half-height
+    if(dy < 0)             // upper half (smaller y = north)
+        return (dx <= 0) ? ((-yy > -dx) ? Direction::NorthWest : Direction::West) :
+                           ((-yy > dx) ? Direction::NorthEast : Direction::East);
+    return (dx <= 0) ? ((yy > -dx) ? Direction::SouthWest : Direction::West) :
+                       ((yy > dx) ? Direction::SouthEast : Direction::East);
+}
+
+bool AIPlayerLlm::hasAnyNonAutoRole() const
+{
+    for(const SectorRole r : strategy_.sectorRoles)
+        if(r != SectorRole::Auto)
+            return true;
+    return false;
+}
+
+SectorRole AIPlayerLlm::RoleAt(const MapPoint pt) const
+{
+    if(!AnchorPos().isValid())
+        return SectorRole::Auto;
+    return strategy_.sectorRoles[SectorOf(pt)];
+}
+
 void AIPlayerLlm::RunGF(const unsigned gf, bool gfisnwf)
 {
+    curGf_ = gf;
     if(aii.IsDefeated())
         return;
     if(!initDone_)
@@ -105,7 +157,7 @@ void AIPlayerLlm::RunGF(const unsigned gf, bool gfisnwf)
     if(gf % strategyInterval_ == 0)
     {
         contained_ = containedTicks_ >= 3;
-        const EconStats s = gatherEconStats(ctx(), gf);
+        const EconStats s = gatherEconStats(ctx(), gf, llmDriven_);
         strategist_->Update(gf, ctx(), s, contained_, strategy_);
         if(gf - lastChatGf_ >= 8000)
         {
@@ -126,20 +178,40 @@ void AIPlayerLlm::RunGF(const unsigned gf, bool gfisnwf)
     if((gf + playerId * 3u) % 2000u == 0)
         GarbageCollectStuckSites(gf);
 
-    if(std::getenv("RTTR_LLM_DEBUG") && gf % 25000 == 0)
+    if(std::getenv("RTTR_LLM_DEBUG") && gf % 12500 == 0)
     {
-        const MapPoint hq = aii.GetHeadquarter() ? aii.GetHeadquarter()->GetPos() : MapPoint(0, 0);
-        const MapPoint smeltSpot = FindSite(BuildingType::Ironsmelter, hq, 11);
+        const EconStats s = gatherEconStats(ctx(), gf);
+        // Iron-race diagnostics: own-territory iron/coal tiles near our centers (is the ore CLAIMED
+        // yet?), mine sites in flight, and the distance from our anchor to the nearest UNCLAIMED iron
+        // (how far the border still has to march). This is the binding early-tempo signal vs AIJH.
+        unsigned ironTerr = 0, coalTerr = 0;
+        std::vector<MapPoint> cs;
+        if(aii.GetHeadquarter())
+            cs.push_back(aii.GetHeadquarter()->GetPos());
+        for(const nobMilitary* m : aii.GetMilitaryBuildings())
+            cs.push_back(m->GetPos());
+        for(const MapPoint c : cs)
+            for(const MapPoint pt : gwb.GetPointsInRadius(c, 6))
+                if(aii.IsOwnTerritory(pt))
+                {
+                    const auto r = aii.GetSubsurfaceResource(pt);
+                    if(r == AISubSurfaceResource::Ironore)
+                        ++ironTerr;
+                    else if(r == AISubSurfaceResource::Coal)
+                        ++coalTerr;
+                }
+        const MapPoint anchor = AnchorPos();
+        const unsigned dIron =
+          anchor.isValid() ? nearestUnclaimedResourceDist(ctx(), anchor, AISubSurfaceResource::Ironore, 50) : 255u;
         std::fprintf(stderr,
-                     "[llm p%u gf%u] sites=%zu milblds=%zu mil=%u coal=%zu iron=%zu smelt=%zu(want=%u) "
-                     "armory=%zu contained=%d tooMany=%d smeltSpotValid=%d\n",
-                     playerId, gf, aii.GetBuildingSites().size(), aii.GetMilitaryBuildings().size(),
-                     player.GetStatisticCurrentValue(StatisticType::Military),
-                     aii.GetBuildings(BuildingType::CoalMine).size(), aii.GetBuildings(BuildingType::IronMine).size(),
-                     aii.GetBuildings(BuildingType::Ironsmelter).size(),
-                     ComputeWanted(gatherEconStats(ctx(), gf))[BuildingType::Ironsmelter],
-                     aii.GetBuildings(BuildingType::Armory).size(), contained_ ? 1 : 0, TooManyOpenSites() ? 1 : 0,
-                     smeltSpot.isValid() ? 1 : 0);
+                     "[llm p%u gf%u] mil=%zu(blds) milSol=%u sites=%zu | ironTerr=%u coalTerr=%u distIron=%u | "
+                     "ironM=%zu(s%u) coalM=%zu smelt=%zu(s%u) armory=%zu sw=%u sh=%u stone=%u | tooMany=%d\n",
+                     playerId, gf, aii.GetMilitaryBuildings().size(),
+                     player.GetStatisticCurrentValue(StatisticType::Military), aii.GetBuildingSites().size(), ironTerr,
+                     coalTerr, dIron, aii.GetBuildings(BuildingType::IronMine).size(), CountSites(BuildingType::IronMine),
+                     aii.GetBuildings(BuildingType::CoalMine).size(), aii.GetBuildings(BuildingType::Ironsmelter).size(),
+                     CountSites(BuildingType::Ironsmelter), aii.GetBuildings(BuildingType::Armory).size(), s.swords,
+                     s.shields, s.stones, TooManyOpenSites() ? 1 : 0);
     }
 }
 
@@ -156,10 +228,17 @@ void AIPlayerLlm::InitOnce()
         if(const char* b = std::getenv("RTTR_LLM_BLOCK_MS"))
             blockMs = static_cast<unsigned>(std::atoi(b));
         strategist_ = std::make_unique<LlmStrategist>(playerId, spool, blockMs, persona);
+        llmDriven_ = true;
+        // Spatial district layout rides on the plan's sectorRoles, so it is meaningful only on the LLM
+        // path. RTTR_LLM_NO_LAYOUT=1 is the A/B off-switch (floor-parity arm). Even when enabled, every
+        // spatial term is additionally gated by hasAnyNonAutoRole(), so a plan that sets no roles is a
+        // no-op too.
+        const char* noLayout = std::getenv("RTTR_LLM_NO_LAYOUT");
+        layoutEnabled_ = !(noLayout && *noLayout);
     } else
         strategist_ = std::make_unique<HeuristicStrategist>(persona);
 
-    const EconStats s = gatherEconStats(ctx(), 0);
+    const EconStats s = gatherEconStats(ctx(), 0, llmDriven_);
     strategist_->Update(0, ctx(), s, false, strategy_);
     SetupDistribution();
     AdjustSettings();
@@ -216,12 +295,17 @@ helpers::EnumArray<unsigned, BuildingType> AIPlayerLlm::ComputeWanted(const Econ
     // construction of everything, including the army).
     w[BuildingType::Woodcutter] = R(3 + terr * 0.6 * eW);
     w[BuildingType::Forester] = std::max(1u, R(2 + terr * 0.3 * eW));
-    w[BuildingType::Quarry] = std::max(2u, R(2 + terr * 0.16));
+    w[BuildingType::Quarry] = std::max(3u, R(2 + terr * 0.2));
     // Cap mines: coal only needs to feed the smelters/armories/mint, not blanket every ore node.
     // Uncapped coal floods the build queue and starves the rest of the weapons chain.
     w[BuildingType::CoalMine] = std::min(12u, std::max(2u, R(terr * 0.3 * mW)));
     w[BuildingType::IronMine] = std::min(14u, std::max(2u, R(terr * 0.28 * mW)));
-    w[BuildingType::GraniteMine] = contained_ ? 2u : (s.stones < 30 ? 1u : 0u);
+    // STONE is the LLM's worst bottleneck: it gates military buildings (3-7 stone -> territory) AND
+    // the smelter/armory chain (2 stone each -> swords -> soldiers). Quarries deplete, but under this
+    // ruleset (gold->granite + inexhaustible mines) granite mines never run dry, so they are the
+    // reliable stone backbone. Keep several running, scaling with the empire; ease off only when
+    // sitting on a large stockpile.
+    w[BuildingType::GraniteMine] = s.stones > 100 ? 1u : std::min(8u, std::max(2u, R(terr * 0.22)));
     // Food must keep the mines running, so scale it with both territory and the weapons chain.
     w[BuildingType::Farm] = std::max(2u, R(terr * 0.55 * eW));
     w[BuildingType::Fishery] = std::max(1u, R(terr * 0.25));
@@ -229,32 +313,82 @@ helpers::EnumArray<unsigned, BuildingType> AIPlayerLlm::ComputeWanted(const Econ
     if(s.hasGold)
         w[BuildingType::GoldMine] = static_cast<unsigned>(std::min(2.0, terr * 0.12));
 
-    // Processors. Capped by upstream supply (finished + sites) so we never build a chain link with no
-    // input, but always allow one of each foundational type to bootstrap.
+    // Processors. CRITICAL: gate each chain link by the *finished* upstream supply (+1 buffer), NOT
+    // by finished+sites. Gating off sites creates huge phantom demand (e.g. 14 iron-mine sites ->
+    // 14 smelter wants -> 27 armory wants) that spawns dozens of build sites which can never finish
+    // (no stone / no iron bars yet). Those stuck sites trip the open-sites ceiling and FREEZE all
+    // construction and expansion - the measured mid-game plateau. Growing strictly off finished
+    // upstream lets the chain bootstrap incrementally without clogging the queue.
     const unsigned nWoodc = NumBuildings(BuildingType::Woodcutter);
-    const unsigned nIron = NumBuildings(BuildingType::IronMine);
-    const unsigned nSmelter = NumBuildings(BuildingType::Ironsmelter);
-    const unsigned nFarm = NumBuildings(BuildingType::Farm);
-    const unsigned nPig = NumBuildings(BuildingType::PigFarm);
-    const unsigned nGold = NumBuildings(BuildingType::GoldMine);
+    const unsigned fIron = CountFinished(BuildingType::IronMine);
+    const unsigned fSmelter = CountFinished(BuildingType::Ironsmelter);
+    const unsigned fFarm = CountFinished(BuildingType::Farm);
+    const unsigned fPig = CountFinished(BuildingType::PigFarm);
+    const unsigned fGold = CountFinished(BuildingType::GoldMine);
+    const bool haveIronMine = NumBuildings(BuildingType::IronMine) > 0;
+    const bool haveFarm = NumBuildings(BuildingType::Farm) > 0;
 
     w[BuildingType::Sawmill] = std::max(1u, (nWoodc + 1) / 2);
     // Toolmakers convert iron into the tools that STAFF mines/smelters/armories. Too few -> the whole
     // specialist economy (especially the weapons chain) sits unstaffed. Scale with the empire.
-    w[BuildingType::Metalworks] = std::min(6u, std::max(2u, R(terr * 0.12)));
-    w[BuildingType::Ironsmelter] = nIron > 0 ? std::max(1u, nIron) : 0u;
-    w[BuildingType::Armory] = nSmelter > 0 ? std::max(1u, std::min(R(terr * 0.6 * mW), nSmelter * 3u)) : 0u;
+    w[BuildingType::Metalworks] = std::min(5u, std::max(2u, R(terr * 0.12)));
+    // Smelters track finished iron mines (one buffer site to stay slightly ahead). Armories track
+    // finished smelters. This keeps the weapons chain growing without spawning unbuildable sites.
+    w[BuildingType::Ironsmelter] = fIron > 0 ? std::min(fIron + 1, 10u) : (haveIronMine ? 1u : 0u);
+    w[BuildingType::Armory] = fSmelter > 0 ? std::min(fSmelter * 2u, R(terr * 0.6 * mW)) : 0u;
     w[BuildingType::Brewery] = std::max(1u, R(terr * 0.18));
-    w[BuildingType::Mill] = nFarm > 0 ? std::max(1u, (nFarm + 1) / 3) : 0u;
-    w[BuildingType::Bakery] = nFarm > 0 ? std::max(1u, (nFarm + 1) / 3) : 0u;
-    w[BuildingType::PigFarm] = nFarm > 1 ? std::max(1u, (nFarm + 1) / 4) : 0u;
-    w[BuildingType::Slaughterhouse] = nPig > 0 ? std::max(1u, nPig) : 0u;
+    w[BuildingType::Mill] = fFarm > 0 ? std::max(1u, (fFarm + 1) / 3) : (haveFarm ? 1u : 0u);
+    w[BuildingType::Bakery] = fFarm > 0 ? std::max(1u, (fFarm + 1) / 3) : 0u;
+    w[BuildingType::PigFarm] = fFarm > 1 ? std::max(1u, (fFarm + 1) / 4) : 0u;
+    w[BuildingType::Slaughterhouse] = fPig > 0 ? std::max(1u, fPig) : 0u;
     w[BuildingType::Well] = std::max(1u, R(terr * 0.3));
     if(s.hasGold)
-        w[BuildingType::Mint] = nGold > 0 ? std::max(1u, nGold) : 0u;
+        w[BuildingType::Mint] = fGold > 0 ? std::max(1u, fGold) : 0u;
 
     // Logistics reach for large empires
     w[BuildingType::Storehouse] = static_cast<unsigned>(terr / 7);
+
+    // Phase / economic-gambit overlay (plan-driven). Multiplies the ALREADY-GATED wants, so a gated
+    // value of 0 stays 0 (no phantom smelter/armory sites can spawn -> the clog invariant holds). At
+    // the default Phase::Auto (and Open) econMul=milMul=1.0, so every want is byte-identical to before.
+    // Only active when an LLM plan drives the strategy (the pure heuristic floor adapts via the knobs).
+    double econMul = 1.0, milMul = 1.0;
+    if(llmDriven_)
+    {
+        switch(strategy_.phase)
+        {
+            case Phase::Auto:
+            case Phase::Open:
+            case Phase::Expand: break; // 1.0 / 1.0 (no-op)
+            case Phase::Consolidate: econMul = 1.1; break;
+            case Phase::Push:
+                econMul = 0.95;
+                milMul = 1.25;
+                break;
+            case Phase::Defend:
+                econMul = 0.9;
+                milMul = 1.2;
+                break;
+        }
+        if(strategy_.economicGambit) // boom now, militarize once the timing trigger fires
+        {
+            econMul *= 1.2;
+            milMul *= 0.85;
+        }
+    }
+    if(econMul != 1.0)
+    {
+        w[BuildingType::Farm] = R(w[BuildingType::Farm] * econMul);
+        w[BuildingType::Woodcutter] = R(w[BuildingType::Woodcutter] * econMul);
+        w[BuildingType::Forester] = R(w[BuildingType::Forester] * econMul);
+    }
+    if(milMul != 1.0)
+    {
+        w[BuildingType::Armory] = R(w[BuildingType::Armory] * milMul);
+        // Re-apply the existing mine caps after scaling so the coal/iron clog invariants still hold.
+        w[BuildingType::CoalMine] = std::min(12u, R(w[BuildingType::CoalMine] * milMul));
+        w[BuildingType::IronMine] = std::min(14u, R(w[BuildingType::IronMine] * milMul));
+    }
 
     // Contained: pour idle surplus into more weapons production
     if(contained_)
@@ -314,6 +448,25 @@ MapPoint AIPlayerLlm::FindSite(BuildingType bt, MapPoint around, unsigned radius
     unsigned evaluated = 0;
     constexpr unsigned evalCap = 90;
 
+    // Spatial layout active? (master gate). Precompute the feint enemy's HQ sector once (it depends on
+    // our anchor + the feint enemy, never on the candidate pt), so the per-point loop stays cheap.
+    const bool spatial = layoutEnabled_ && hasAnyNonAutoRole();
+    Direction feintSector = Direction::West;
+    bool haveFeintSector = false;
+    if(spatial && strategy_.feintTargetEnemy >= 0 && AnchorPos().isValid())
+    {
+        const auto fid = static_cast<unsigned>(strategy_.feintTargetEnemy);
+        if(fid < gwb.GetNumPlayers())
+        {
+            const MapPoint fhq = gwb.GetPlayer(fid).GetHQPos();
+            if(fhq.isValid())
+            {
+                feintSector = SectorOf(fhq);
+                haveFeintSector = true;
+            }
+        }
+    }
+
     for(const MapPoint pt : gwb.GetPointsInRadius(around, radius))
     {
         if(!aii.IsOwnTerritory(pt))
@@ -344,7 +497,97 @@ MapPoint AIPlayerLlm::FindSite(BuildingType bt, MapPoint around, unsigned radius
         {
             if(++evaluated > evalCap)
                 break;
-            const int v = aii.CalcResourceValue(pt, res);
+            int v = aii.CalcResourceValue(pt, res);
+            // March military expansion toward the nearest unclaimed ore we still need (iron is often
+            // far from the start; AIJH reaches it because it expands toward resources, not just open
+            // border). Crucially this bonus is added BEFORE the v<=0 gate, so spots that lean toward
+            // ore but have little borderland value (into wilderness/mountains) still qualify - that is
+            // what lets the border actually grow toward the iron mountain instead of only along the
+            // existing front.
+            // oreTarget_ is need-gated (set only while we still lack iron/coal/granite), so make the
+            // pull DOMINANT over plain borderland: otherwise the border never marches to iron, it just
+            // stumbles onto it after dozens of broad claims (~gf100k vs AIJH's ~gf50k). A strong, gently
+            // decaying gradient turns early military expansion into a focused chain that secures the
+            // weapons-chain ore first; it auto-disengages once we have enough mines (oreTarget_ invalid).
+            if(oreTarget_.isValid() && BuildingProperties::IsMilitary(bt))
+                v += std::max(0, 360 - static_cast<int>(gwb.CalcDistance(pt, oreTarget_)) * 6);
+
+            // --- M5b spatial district biases (plan-driven). All composed BEFORE the v<=0 gate so they
+            //     stack with the ore-march and so a strongly-penalised cramped spot drops out this pass
+            //     (open ground wins; never a hard block - a later pass/anchor finds space). Master-gated
+            //     on `spatial` (layoutEnabled_ && hasAnyNonAutoRole()): the heuristic never sets roles, so
+            //     this whole region is inert on the floor path -> FindSite is byte-identical to M5a there.
+            if(spatial)
+            {
+                const bool isMil = BuildingProperties::IsMilitary(bt);
+                // 8.1 Farms-vs-foresters mutual repulsion + same-kind clustering. Farms and forest huts
+                // fight over the SAME plantspace tiles; keeping them apart stops a farm landing in the
+                // middle of the woodcutters' grove (the explicit goal). Always on (not role-gated) once
+                // any role exists, since it is purely about co-location, not sector intent.
+                if(bt == BuildingType::Farm)
+                {
+                    if(aii.isBuildingNearby(BuildingType::Forester, pt, 6))
+                        v -= 120;
+                    if(aii.isBuildingNearby(BuildingType::Woodcutter, pt, 5))
+                        v -= 60;
+                    if(aii.isBuildingNearby(BuildingType::Farm, pt, 7))
+                        v += 25; // cluster the farm belt
+                } else if(bt == BuildingType::Forester || bt == BuildingType::Woodcutter)
+                {
+                    if(aii.isBuildingNearby(BuildingType::Farm, pt, 6))
+                        v -= 100;
+                    if(aii.isBuildingNearby(BuildingType::Forester, pt, 4))
+                        v += 30; // co-locate the forester camp
+                }
+
+                const SectorRole role = RoleAt(pt);
+                if(!isMil)
+                {
+                    // 8.2 Sector-role term for economy/resource buildings.
+                    const bool isFood = bt == BuildingType::Farm || bt == BuildingType::Fishery
+                                        || bt == BuildingType::Hunter;
+                    const bool isWood = bt == BuildingType::Forester || bt == BuildingType::Woodcutter;
+                    switch(role)
+                    {
+                        case SectorRole::FarmBelt:
+                            if(isFood)
+                                v += 80;
+                            if(isWood)
+                                v -= 80;
+                            break;
+                        case SectorRole::ExpandEconomy:
+                            if(isWood)
+                                v += 40;
+                            break;
+                        case SectorRole::MiningOutpost: break; // smelter/armory ride the closest path (M5a)
+                        case SectorRole::Ignore: v -= 200; break;
+                        case SectorRole::Auto:
+                        case SectorRole::MilitaryPush:
+                        case SectorRole::Hold: break; // no economy bias
+                    }
+                } else
+                {
+                    // 8.3 Military sector bias, alongside the existing oreTarget_ bonus above.
+                    switch(role)
+                    {
+                        case SectorRole::MilitaryPush: v += 120; break;
+                        case SectorRole::Hold: v += 80; break;
+                        case SectorRole::Ignore: v -= 200; break;
+                        case SectorRole::Auto:
+                        case SectorRole::ExpandEconomy:
+                        case SectorRole::FarmBelt:
+                        case SectorRole::MiningOutpost: break;
+                    }
+                    // Feint sector pull: nudge a few claims toward the feint enemy's bearing.
+                    if(haveFeintSector && SectorOf(pt) == feintSector)
+                        v += 70;
+                    // primaryTarget_ directional mass (mirrors the ore-march). Set in TryExpand and
+                    // reset there, so it only biases military FindSite calls during expansion.
+                    if(primaryTarget_.isValid())
+                        v += std::max(0, 130 - static_cast<int>(gwb.CalcDistance(pt, primaryTarget_)) * 3);
+                }
+            }
+
             if(v <= 0)
                 continue;
             if(v > bestScore)
@@ -395,33 +638,42 @@ void AIPlayerLlm::PlanEconomy(unsigned gf)
     const auto w = ComputeWanted(s);
 
     // Interleave the chains so a single pass never spends its whole budget on boards before reaching
-    // the weapons chain. Boards -> base food -> WEAPONS -> more food -> rest.
+    // the weapons chain. Boards -> STONE -> base food -> WEAPONS -> more food -> rest. Stone is moved
+    // up front because it gates military buildings and the smelter/armory chain (the LLM's chronic
+    // starvation); without it the rest of the queue can't actually be built.
     static const BuildingType order[] = {
       BuildingType::Sawmill,    BuildingType::Woodcutter,    BuildingType::Forester,
-      BuildingType::Well,       BuildingType::Farm,          BuildingType::Mill,
-      BuildingType::Bakery,     BuildingType::CoalMine,      BuildingType::IronMine,
-      BuildingType::Ironsmelter, BuildingType::Armory,       BuildingType::Brewery,
-      BuildingType::Fishery,    BuildingType::Hunter,        BuildingType::PigFarm,
-      BuildingType::Slaughterhouse, BuildingType::Quarry,    BuildingType::Metalworks,
-      BuildingType::GraniteMine, BuildingType::GoldMine,     BuildingType::Mint,
+      BuildingType::Quarry,     BuildingType::GraniteMine,   BuildingType::Well,
+      BuildingType::Farm,       BuildingType::Mill,          BuildingType::Bakery,
+      BuildingType::CoalMine,   BuildingType::IronMine,      BuildingType::Ironsmelter,
+      BuildingType::Armory,     BuildingType::Brewery,       BuildingType::Fishery,
+      BuildingType::Hunter,     BuildingType::PigFarm,
+      BuildingType::Slaughterhouse, BuildingType::Metalworks,
+      BuildingType::GoldMine,     BuildingType::Mint,
       BuildingType::Storehouse};
 
-    unsigned budget = 12;
-    for(const BuildingType bt : order)
+    // ROUND-ROBIN the chain: place at most ONE of each wanted type per outer lap, looping until the
+    // budget is spent or a whole lap places nothing. The old front-loaded "up to 3 per type in one
+    // pass" let the first few high-want types (woodcutter/forester/quarry want 10+) consume the whole
+    // budget before reaching Farm (7th) -> farms starved (measured: 1 farm vs AIJH's 8 by gf40k) ->
+    // no food -> no mines -> no weapons. Round-robin guarantees every link (esp. farms, then mines)
+    // advances each plan tick, so the food->mine->weapons chain bootstraps on time.
+    unsigned budget = 16;
+    bool progressed = true;
+    while(budget > 0 && progressed)
     {
-        if(budget == 0)
-            break;
-        int need = static_cast<int>(w[bt]) - static_cast<int>(NumBuildings(bt));
-        // Cap placements per type per pass so a high-want type (e.g. mines) can't consume the whole
-        // budget and starve the rest of the chain (smelters/armories) of build slots.
-        unsigned perType = 0;
-        while(need > 0 && budget > 0 && perType < 3)
+        progressed = false;
+        for(const BuildingType bt : order)
         {
-            if(!PlaceBuilding(bt, 11))
+            if(budget == 0)
                 break;
-            --need;
-            --budget;
-            ++perType;
+            if(static_cast<int>(w[bt]) - static_cast<int>(NumBuildings(bt)) <= 0)
+                continue;
+            if(PlaceBuilding(bt, 11))
+            {
+                --budget;
+                progressed = true;
+            }
         }
     }
 }
@@ -435,6 +687,43 @@ BuildingType AIPlayerLlm::ChooseMilitaryType(const EconStats& s) const
     if(s.stones > 20 && aii.CanBuildBuildingtype(BuildingType::Guardhouse))
         return BuildingType::Guardhouse;
     return BuildingType::Barracks;
+}
+
+MapPoint AIPlayerLlm::NearestNeededOre(const EconStats& s) const
+{
+    const bool needIron = NumBuildings(BuildingType::IronMine) < 4;
+    const bool needCoal = NumBuildings(BuildingType::CoalMine) < 5;
+    const bool needGranite = NumBuildings(BuildingType::GraniteMine) < 2 && s.stones < 60;
+    if(!needIron && !needCoal && !needGranite)
+        return MapPoint::Invalid();
+
+    // GetHeadquarter() is null-safe now, but storehouses (incl. HQ) are a robust center even after an
+    // HQ loss, so use them.
+    MapPoint center = MapPoint::Invalid();
+    if(!aii.GetStorehouses().empty())
+        center = aii.GetStorehouses().front()->GetPos();
+    else if(!aii.GetMilitaryBuildings().empty())
+        center = aii.GetMilitaryBuildings().front()->GetPos();
+    if(!center.isValid())
+        return MapPoint::Invalid();
+
+    const AIContext c = ctx();
+    // Iron is the long pole of the weapons chain, so prefer it; fall back to the closer of coal/granite.
+    // Uses the shared radius-scan primitive (M4.1) so the ore-march and the digests agree on geometry.
+    const MapPoint bestIron =
+      needIron ? nearestUnclaimedResource(c, center, AISubSurfaceResource::Ironore, 42) : MapPoint::Invalid();
+    if(bestIron.isValid())
+        return bestIron;
+
+    const MapPoint bestCoal =
+      needCoal ? nearestUnclaimedResource(c, center, AISubSurfaceResource::Coal, 42) : MapPoint::Invalid();
+    const MapPoint bestGranite =
+      needGranite ? nearestUnclaimedResource(c, center, AISubSurfaceResource::Granite, 42) : MapPoint::Invalid();
+    if(!bestCoal.isValid())
+        return bestGranite;
+    if(!bestGranite.isValid())
+        return bestCoal;
+    return gwb.CalcDistance(center, bestCoal) <= gwb.CalcDistance(center, bestGranite) ? bestCoal : bestGranite;
 }
 
 void AIPlayerLlm::TryExpand(unsigned gf)
@@ -454,8 +743,25 @@ void AIPlayerLlm::TryExpand(unsigned gf)
         return;
 
     // Territory is the master growth lever (it gates farms -> food -> mines -> weapons), so push
-    // several claims per pass.
+    // several claims per pass. Set oreTarget_ so FindSite marches the border toward the nearest
+    // iron/coal/granite mountain we still need (securing the weapons chain early, like AIJH does).
     const EconStats s = gatherEconStats(ctx(), gf);
+    oreTarget_ = NearestNeededOre(s);
+    // Plan-driven primary-enemy directional mass: bias military FindSite toward the primary enemy's HQ
+    // (mirrors the ore-march). Gated like the spatial terms (layout on + roles set) and on a valid enemy
+    // HQ, so it is no-op on the floor path and when no plan names a primary target. Reset below alongside
+    // oreTarget_ so it never leaks into economy/debug FindSite calls.
+    primaryTarget_ = MapPoint::Invalid();
+    if(layoutEnabled_ && hasAnyNonAutoRole() && strategy_.primaryTargetEnemy >= 0)
+    {
+        const auto pid = static_cast<unsigned>(strategy_.primaryTargetEnemy);
+        if(pid < gwb.GetNumPlayers())
+        {
+            const MapPoint phq = gwb.GetPlayer(pid).GetHQPos();
+            if(phq.isValid())
+                primaryTarget_ = phq;
+        }
+    }
     const unsigned toPlace = std::min(5u, maxPending - milSites);
     bool anyPlaced = false;
     for(unsigned i = 0; i < toPlace; ++i)
@@ -466,6 +772,8 @@ void AIPlayerLlm::TryExpand(unsigned gf)
         else
             break;
     }
+    oreTarget_ = MapPoint::Invalid();     // don't bias non-military FindSite calls (economy, debug)
+    primaryTarget_ = MapPoint::Invalid(); // ditto: only active during military expansion
     if(anyPlaced)
         containedTicks_ = 0;
     else
@@ -555,7 +863,49 @@ void AIPlayerLlm::TryAttack()
     const unsigned numMilBlds = static_cast<unsigned>(militaryBuildings.size());
     if(numMilBlds == 0)
         return;
-    const unsigned limit = 20 + strategy_.attackAggression * 4u; // check more buildings when aggressive
+
+    // Plan-driven attack overlay (timing gate + posture). Only active when an LLM plan drives the
+    // strategy; the pure heuristic floor keeps the original timing (always-on) and reqRatio. Each piece
+    // is ALSO no-op at its own defaults (triggers 0, attackIntent Auto/Hold), so an LLM that emits no
+    // attack intent matches the floor too.
+    double reqRatioFloor = 1.50;
+    unsigned intentLimitBonus = 0;
+    if(llmDriven_)
+    {
+        // Timing gate: hold attacks until our army reaches a target size or the game reaches a target
+        // minute. No-op when both triggers are 0 (the default).
+        const unsigned myMil = player.GetStatisticCurrentValue(StatisticType::Military);
+        if(strategy_.timingTriggerArmy > 0 || strategy_.timingTriggerMinute > 0)
+        {
+            const bool armyReady = strategy_.timingTriggerArmy > 0 && myMil >= strategy_.timingTriggerArmy;
+            const bool timeReady =
+              strategy_.timingTriggerMinute > 0 && curGf_ / 1200u >= strategy_.timingTriggerMinute;
+            if(!armyReady && !timeReady)
+                return;
+        }
+
+        // Posture. Auto/Hold keep the current behaviour byte-identical (reqRatioFloor 1.50, no limit
+        // bonus); the stronger intents only LOOSEN (lower the demanded advantage, scan more buildings) so
+        // the floor is never tightened. Hold's actual cap rides through attackAggression (capped in
+        // ApplyFocusToKnobs), not here.
+        switch(strategy_.attackIntent)
+        {
+            case AttackIntent::Probe: reqRatioFloor = 1.10; break;
+            case AttackIntent::Commit:
+                reqRatioFloor = 0.95;
+                intentLimitBonus = 8;
+                break;
+            case AttackIntent::AllIn:
+                reqRatioFloor = 0.75;
+                intentLimitBonus = 20;
+                break;
+            case AttackIntent::Auto:
+            case AttackIntent::Hold: break;
+        }
+    }
+
+    const unsigned limit =
+      20 + strategy_.attackAggression * 4u + intentLimitBonus; // check more buildings when aggressive
 
     // Collect candidate enemy targets seen from our frontier buildings (undefended HQs/harbors first).
     unsigned undefendedFirst = 0;
@@ -587,8 +937,32 @@ void AIPlayerLlm::TryAttack()
         return;
     std::shuffle(targets.begin() + undefendedFirst, targets.end(), AI::getRandomGenerator());
 
-    // How much advantage we demand before committing (more aggressive -> attack at parity).
-    const double reqRatio = std::max(0.7, 1.5 - strategy_.attackAggression * 0.09);
+    // Plan-driven target ordering: after the shuffle (which keeps replays deterministic), bring the
+    // primary enemy's buildings to the front of the defended tail and push the feint enemy's to the
+    // back. stable_sort preserves the shuffled order within each tier. No-op at defaults (both targets
+    // -1 => every tier()==1 => order unchanged), and the undefended-HQ prefix is never reordered. Gated
+    // on llmDriven_ so the heuristic floor is byte-identical (it never sets target ids anyway).
+    if(llmDriven_ && (strategy_.primaryTargetEnemy >= 0 || strategy_.feintTargetEnemy >= 0))
+    {
+        const int primary = strategy_.primaryTargetEnemy;
+        const int feint = strategy_.feintTargetEnemy;
+        const auto tier = [primary, feint](const nobBaseMilitary* t) -> int {
+            const int owner = static_cast<int>(t->GetPlayer());
+            if(owner == primary)
+                return 0;
+            if(owner == feint)
+                return 2;
+            return 1;
+        };
+        std::stable_sort(targets.begin() + undefendedFirst, targets.end(),
+                         [&tier](const nobBaseMilitary* a, const nobBaseMilitary* b) { return tier(a) < tier(b); });
+    }
+
+    // How much advantage we demand before committing (more aggressive -> attack at parity). The attack
+    // intent only loosens this floor; at default attackIntent=Auto, min(aggrRatio, 1.50)=aggrRatio,
+    // identical to the prior single-expression form.
+    const double aggrRatio = std::max(0.7, 1.5 - strategy_.attackAggression * 0.09);
+    const double reqRatio = std::min(aggrRatio, reqRatioFloor);
 
     for(const nobBaseMilitary* target : targets)
     {

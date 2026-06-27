@@ -61,14 +61,43 @@ private:
     bool FlagConnected(MapPoint flagPos) const;
     void GarbageCollectStuckSites(unsigned gf);
     BuildingType ChooseMilitaryType(const EconStats& s) const;
+    /// Nearest unclaimed ore tile of a type we still lack (iron prioritized), or invalid if well-supplied.
+    /// Used to march military expansion toward the mountains that feed the weapons chain.
+    MapPoint NearestNeededOre(const EconStats& s) const;
     bool HasGold() const;
+
+    // --- M5b spatial layout (district biases in FindSite). All gated by layoutEnabled_ AND
+    //     hasAnyNonAutoRole(); each term is also no-op at its own default (role Auto / target -1). ---
+    /// Our anchor point for HQ-centered sector math: the HQ if alive, else the first storehouse, else
+    /// the first military building. Invalid if we hold nothing.
+    MapPoint AnchorPos() const;
+    /// Coarse HQ-centered sector for `pt` (integer wrap-delta bucket; SPEC §5.2). Duplicated from the
+    /// digest's sectorOf so the two layers agree on geometry without a cross-translation-unit dependency.
+    Direction SectorOf(MapPoint pt) const;
+    /// Plan-assigned spatial role for the sector containing `pt`, or Auto when no anchor / layout off.
+    SectorRole RoleAt(MapPoint pt) const;
+    /// True iff any sector carries a non-Auto role (master gate: the heuristic never sets roles, so this
+    /// is false on the floor path and every spatial term is inert -> byte-identical to M5a).
+    bool hasAnyNonAutoRole() const;
 
     std::unique_ptr<IStrategist> strategist_;
     Strategy strategy_;
 
     unsigned initGfDelay_ = 0;
+    unsigned curGf_ = 0; // current game frame, set at the top of RunGF (drives timing-gated intents)
     bool initDone_ = false;
+    // True only when an LLM strategist is driving (RTTR_LLM_SPOOL set). Gates the M5 executor intent
+    // hooks (phase/gambit/attack-intent overlays) so the pure heuristic floor stays byte-identical: the
+    // heuristic adapts entirely through the 7 knobs (already folded by ApplyFocusToKnobs), whereas the
+    // direct-read intent fields are an LLM layer on top. Each hook is ALSO no-op at its own defaults.
+    bool llmDriven_ = false;
+    // True when spatial district layout is permitted. Set once in InitOnce: enabled only on the LLM
+    // path and only when RTTR_LLM_NO_LAYOUT is unset/empty. With it false (heuristic, or the A/B floor
+    // arm) every FindSite spatial term is skipped -> byte-identical to M5a.
+    bool layoutEnabled_ = false;
     std::vector<MapPoint> orderedThisNwf_; // collision avoidance within a network frame
+    MapPoint oreTarget_ = MapPoint::Invalid(); // set during military expansion to march FindSite toward ore
+    MapPoint primaryTarget_ = MapPoint::Invalid(); // primary-enemy HQ; biases military FindSite toward it
     unsigned containedTicks_ = 0;          // consecutive failed expansion attempts
     bool contained_ = false;
     unsigned lastChatGf_ = 0;

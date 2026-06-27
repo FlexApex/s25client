@@ -259,7 +259,10 @@ bool AIInterface::FindPathOnRoads(const noRoadNode& start, const noRoadNode& tar
 
 const nobHQ* AIInterface::GetHeadquarter() const
 {
-    return gwb.GetSpecObj<nobHQ>(player_.GetHQPos());
+    // Honour the "or null if destroyed" contract: after the HQ is lost GetHQPos() is invalid, and
+    // GetSpecObj()/GetNode() on an invalid point reads out of bounds (crash). Guard it like GamePlayer.
+    const MapPoint hqPos = player_.GetHQPos();
+    return hqPos.isValid() ? gwb.GetSpecObj<nobHQ>(hqPos) : nullptr;
 }
 
 bool AIInterface::isBuildingNearby(BuildingType bldType, const MapPoint pt, unsigned maxDistance) const

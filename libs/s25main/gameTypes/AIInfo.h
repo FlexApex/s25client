@@ -22,11 +22,12 @@ constexpr auto maxEnumValue(Level)
 enum class Type : uint8_t
 {
     Dummy,
-    Default
+    Default,
+    Llm
 };
 constexpr auto maxEnumValue(Type)
 {
-    return Type::Default;
+    return Type::Llm;
 }
 
 struct Info

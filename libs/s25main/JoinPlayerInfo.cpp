@@ -58,7 +58,8 @@ std::string JoinPlayerInfo::MakeAIName(const AI::Info& aiInfo, unsigned playerId
             case AI::Level::Medium: name += _(" (medium)"); break;
             case AI::Level::Hard: name += _(" (hard)"); break;
         }
-    }
+    } else if(aiInfo.type == AI::Type::Llm)
+        name += _(" (LLM)");
 
     return name;
 }

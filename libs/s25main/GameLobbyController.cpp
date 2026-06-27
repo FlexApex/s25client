@@ -61,9 +61,10 @@ void GameLobbyController::TogglePlayerState(unsigned playerIdx)
                     {
                         case AI::Level::Easy: aiInfo.level = AI::Level::Medium; break;
                         case AI::Level::Medium: aiInfo.level = AI::Level::Hard; break;
-                        case AI::Level::Hard: aiInfo = AI::Info(AI::Type::Dummy); break;
+                        case AI::Level::Hard: aiInfo = AI::Info(AI::Type::Llm, AI::Level::Hard); break;
                     }
                     break;
+                case AI::Type::Llm: aiInfo = AI::Info(AI::Type::Dummy); break;
                 case AI::Type::Dummy: newPs = PlayerState::Locked;
             }
             break;

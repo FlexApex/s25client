@@ -37,6 +37,7 @@ The API key is never printed. --selftest reports only which variable NAMES were 
 """
 import argparse
 import glob
+import datetime
 import hashlib
 import json
 import os
@@ -45,6 +46,25 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# ---- logging ----------------------------------------------------------------
+# Leveled, greppable logging to stderr. Tail it on a second monitor while gaming:
+#   ... 2>llm.log ; tail -f llm.log                         # everything
+#   tail -f llm.log | grep 'explanation:'                   # the model's one-liner reasoning
+#   tail -f llm.log | grep -E ' (WARN|ERROR) '              # problems (HTTP codes, fallbacks)
+#   tail -f llm.log | grep -E ' (REQ|RESP) '                # request/response trace
+# Set LLM_LOG_LEVEL=DEBUG to also emit full request/response JSON (REQ-FULL / RESP-FULL).
+_LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
+_LOG_LEVEL = _LEVELS.get(os.environ.get("LLM_LOG_LEVEL", "INFO").upper(), 20)
+
+
+def log(level, msg):
+    if _LEVELS.get(level, 20) < _LOG_LEVEL:
+        return
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    sys.stderr.write(f"{ts} {level:<5} {msg}\n")
+    sys.stderr.flush()
+
 
 # ---- config -----------------------------------------------------------------
 
@@ -224,7 +244,9 @@ object (no prose, no markdown) with these keys (all optional; omit a key to keep
   "economicGambit": true/false (boom now, militarise at the trigger)
   "sectorRoles": list of 6 sector roles by direction [W,NW,NE,E,SE,SW], each one of
                  MilitaryPush|ExpandEconomy|FarmBelt|MiningOutpost|Hold|Ignore
-  "rationale": one-line in-character reasoning / taunt (<=160 chars)
+  "explanation": REQUIRED. One concise, human-readable sentence (<=140 chars) on what this plan does
+                 and why (e.g. "Booming economy while walling the south; will push P2 once army>=70.").
+                 This is shown to the human watching the game - make it genuinely informative.
 """
 
 OUTPUT_TICK = """You are the CHEAP tactician adapting the live plan THIS tick. Reply with ONLY a JSON object
@@ -238,7 +260,8 @@ OUTPUT_TICK = """You are the CHEAP tactician adapting the live plan THIS tick. R
   "attackIntent": one of Hold|Probe|Commit|AllIn
   "defense": 0-10 (defensive stance: 0 loose .. 10 fortress)
   "requestReplan": true/false (ask the expensive strategist for a fresh plan now)
-  "diagnosis": one-line situation read (<=120 chars)
+  "explanation": REQUIRED. One concise, human-readable sentence (<=120 chars) on your read of the
+                 situation and what you're adjusting this tick. Shown to the human watching the game.
 """
 
 
@@ -412,7 +435,9 @@ def plan_to_kv(plan, current, kind):
     """Validate/clamp the model's plan against the PINNED tables, falling back to current values.
 
     Emits the shared knobs always; plan-only keys when kind=="plan"; tick-only keys when kind=="tick".
-    Unknown enum value -> drop the key (the C++ side then keeps its prior value). Returns key=value text.
+    Unknown enum value -> drop the key (the C++ side then keeps its prior value).
+    Returns (key=value text, explanation one-liner) - the explanation is logged for human tracing and
+    also shown in-game via the chat= line.
     """
     lines = []
 
@@ -434,15 +459,20 @@ def plan_to_kv(plan, current, kind):
         we = plan.get("wantExpand", current.get("wantExpand", True))
         lines.append("wantExpand=" + ("1" if _truthy(we) else "0"))
 
-    # Free text: rationale/diagnosis both map onto chat (D7); strategyName gets its own line.
+    # Free text. The model's `explanation` (a concise human-readable one-liner on what it's doing and
+    # why) is the primary source; rationale/diagnosis/chat are accepted fallbacks. It is logged with an
+    # "explanation:" prefix for human tracing AND shown in-game via the chat= line. strategyName its own.
     name = plan.get("strategyName")
     if isinstance(name, str) and name.strip():
         lines.append("strategyName=" + _clean_text(name, 48))
-    chat = plan.get("rationale") if kind == "plan" else plan.get("diagnosis")
-    if chat is None:
-        chat = plan.get("chat")
-    if isinstance(chat, str) and chat.strip():
-        lines.append("chat=" + _clean_text(chat, 160))
+    explanation = plan.get("explanation")
+    if not (isinstance(explanation, str) and explanation.strip()):
+        explanation = plan.get("rationale") if kind == "plan" else plan.get("diagnosis")
+    if not (isinstance(explanation, str) and explanation.strip()):
+        explanation = plan.get("chat")
+    explanation = _clean_text(explanation, 160) if isinstance(explanation, str) else ""
+    if explanation:
+        lines.append("chat=" + explanation)
 
     # --- plan-only keys ---
     if kind == "plan":
@@ -483,7 +513,7 @@ def plan_to_kv(plan, current, kind):
         if "requestReplan" in plan:
             lines.append("requestReplan=" + ("1" if _truthy(plan["requestReplan"]) else "0"))
 
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", explanation
 
 
 # ---- stub mode (deterministic canned plans, ZERO network) -------------------
@@ -579,8 +609,10 @@ def stub_plan(snap, kind, current):
         if contained:
             roles = ["MilitaryPush", "MilitaryPush", "Hold", "MiningOutpost", "Hold", "MilitaryPush"]
         plan["sectorRoles"] = roles
-        plan["rationale"] = (f"[stub] {plan['phase']}; needIron={need_iron} needStone={need_stone} "
-                             f"target={primary}; mil {my_mil} vs {enemy_mil}.")
+        goal = "secure iron" if need_iron else ("secure stone" if need_stone else "expand & grow")
+        plan["explanation"] = (f"[stub] {plan['phase']} plan: {goal}"
+                               + (f", press P{primary}" if (ahead and primary >= 0) else "")
+                               + f" (mil {my_mil} vs {enemy_mil}).")
     else:  # tick
         plan["expansionAggression"] = 2 if contained else (8 if not behind else 4)
         plan["economyFocus"] = 8 if (minutes < 30 and not behind) else 5
@@ -600,33 +632,55 @@ def stub_plan(snap, kind, current):
         plan["defense"] = 9 if behind else (3 if ahead else 5)
         # Occasionally ask for a replan when the picture shifts hard (never latches: one-shot).
         plan["requestReplan"] = bool(behind and bucket == 0)
-        plan["diagnosis"] = f"[stub] tick {minutes}m, mil {my_mil} vs {enemy_mil}, contained={contained}."
+        stance = "defending (behind)" if behind else ("pressing (ahead)" if ahead else "steady")
+        plan["explanation"] = (f"[stub] tick {minutes}m: {plan['focusPrimary']}+{plan['focusSecondary']}, "
+                               f"{stance}; mil {my_mil} vs {enemy_mil}.")
 
     return plan_to_kv(plan, current, kind)
 
 
 # ---- expensive-tier budget --------------------------------------------------
 
-class ExpensiveBudget:
-    """Global (single-threaded sidecar) rate limiter for the expensive tier. monotonic-clock based."""
+def http_err_info(e):
+    """Classify an LLM-call exception -> (code|None, label, is_rate_limit). Logs the real HTTP code."""
+    code = getattr(e, "code", None)
+    if code is not None:
+        # 429 Too Many Requests; 503/529 overloaded -> treat as transient rate-limit (cool down).
+        return code, f"HTTP {code}", code in (429, 503, 529)
+    if isinstance(e, urllib.error.URLError):
+        return None, f"URLError: {getattr(e, 'reason', e)}", False
+    return None, f"{type(e).__name__}: {e}", False
 
-    def __init__(self, min_interval_s=8.0, hard_cap=0):
-        self.min_interval_s = float(min_interval_s)
-        self.hard_cap = int(hard_cap)  # 0 = no hard cap
-        self._last = None
-        self._count = 0
 
-    def allowed(self):
-        if self.hard_cap and self._count >= self.hard_cap:
+class ExpensiveTier:
+    """Health/pacing for the expensive (strong, rate-limited) tier. On a rate-limit it 'cools down' and
+    requests fall back to the cheap tier; after retry_after_s it retries expensive. State transitions
+    produce an in-game notice (down/up) so the player sees what's happening. monotonic-clock based."""
+
+    def __init__(self, min_interval_s=8.0, retry_after_s=60.0):
+        self.min_interval_s = float(min_interval_s)   # spacing between expensive calls (budget)
+        self.retry_after_s = float(retry_after_s)     # how long to avoid expensive after a rate-limit
+        self._last = None                             # last successful expensive call
+        self._cooldown_until = 0.0                    # monotonic; >now => rate-limited, use cheap
+        self.cooling = False                          # current state (for transition detection)
+
+    def usable(self):
+        """True if an expensive call may be attempted now (not cooling, and min-interval elapsed)."""
+        if time.monotonic() < self._cooldown_until:
             return False
-        if self._last is None:
-            return True
-        return (time.monotonic() - self._last) >= self.min_interval_s
+        if self._last is not None and (time.monotonic() - self._last) < self.min_interval_s:
+            return False
+        return True
 
-    def record(self):
-        """Record a SUCCESSFUL expensive call (call only after the model actually answered)."""
+    def cooling_now(self):
+        return time.monotonic() < self._cooldown_until
+
+    def record_success(self):
         self._last = time.monotonic()
-        self._count += 1
+
+    def trip(self):
+        """Record a rate-limit: cool down and route to cheap until retry_after_s elapses."""
+        self._cooldown_until = time.monotonic() + self.retry_after_s
 
 
 # ---- request handling -------------------------------------------------------
@@ -638,21 +692,17 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def _route_chain(req_tier, cfgs, budget):
-    """Return the ordered list of (tier, cfg) to try. Cheap never escalates; expensive may fall back."""
-    chain = []
-    if req_tier == "expensive":
-        if cfgs.get("expensive") and budget.allowed():
-            chain.append(("expensive", cfgs["expensive"]))
-        if cfgs.get("cheap"):  # degrade expensive -> cheap so the model still answers
-            chain.append(("cheap", cfgs["cheap"]))
+def _emit(resp_path, cache, cache_key, kv, notice):
+    """Write the response (optionally with a one-shot in-game notice= line). Notices are transitional
+    (fallback/recovery), so they are NOT cached - only the plain kv is reused for identical positions."""
+    if notice:
+        write_atomic(resp_path, kv + "notice=" + _clean_text(notice, 160) + "\n")
     else:
-        if cfgs.get("cheap"):
-            chain.append(("cheap", cfgs["cheap"]))
-    return chain
+        cache[cache_key] = kv
+        write_atomic(resp_path, kv)
 
 
-def handle_request(req_path, cache, cfgs, budget, prompt_cache, stub):
+def handle_request(req_path, cache, cfgs, expensive, prompt_cache, stub):
     base = os.path.basename(req_path)              # req_p<P>_<gf>.json
     stem = base[len("req_"):-len(".json")]          # p<P>_<gf>
     resp_path = os.path.join(os.path.dirname(req_path), "resp_" + stem + ".txt")
@@ -672,6 +722,8 @@ def handle_request(req_path, cache, cfgs, budget, prompt_cache, stub):
     if kind not in ("plan", "tick"):
         kind = "tick"
     current = snapshot.get("currentStrategy", {})
+    log("INFO", f"REQ  {req_tier:<9} {kind:<4} {stem}")
+    log("DEBUG", f"REQ-FULL {stem} {json.dumps(snapshot)}")
 
     # Cache by the situational fields (drop volatile gf/minutes) so identical positions reuse a
     # decision; key includes tier+kind so plan/tick and cheap/expensive don't collide.
@@ -682,56 +734,91 @@ def handle_request(req_path, cache, cfgs, budget, prompt_cache, stub):
     ))
     if cache_key in cache:
         write_atomic(resp_path, cache[cache_key])
+        log("DEBUG", f"CACHE {stem} (reused prior decision)")
         return
 
-    # Stub mode: deterministic canned plan, no cfg/network. Runs before any routing/budget.
+    # Stub mode: deterministic canned plan, no cfg/network. Runs before any routing.
     if stub:
-        kv = stub_plan(snapshot, kind, current)
+        kv, expl = stub_plan(snapshot, kind, current)
         cache[cache_key] = kv
         write_atomic(resp_path, kv)
-        sys.stderr.write(f"[sidecar] STUB {stem} ({req_tier}/{kind}): {kv.splitlines()[0] if kv.strip() else '(empty)'}\n")
+        log("INFO", f"RESP {req_tier:<9} {kind:<4} {stem} (stub)")
+        if expl:
+            log("INFO", f"explanation: [{stem} {req_tier}] {expl}")
         return
 
-    chain = _route_chain(req_tier, cfgs, budget)
-    if not chain:
-        # No usable tier (config incomplete / budget exhausted): leave no response -> C++ heuristic.
+    # Build the try-chain. ONLY fallback is expensive -> cheap (per design). Cheap requests use cheap.
+    attempts = []
+    if req_tier == "expensive":
+        if cfgs.get("expensive") and expensive.usable():
+            attempts.append(("expensive", cfgs["expensive"]))
+        if cfgs.get("cheap"):
+            attempts.append(("cheap", cfgs["cheap"]))
+    elif cfgs.get("cheap"):
+        attempts.append(("cheap", cfgs["cheap"]))
+    if not attempts:
+        log("WARN", f"NO-TIER {stem}: no usable model (config incomplete / cooling) -> heuristic floor")
         return
 
     system_prompt = get_system_prompt(snapshot, kind, prompt_cache)
-    for used_tier, cfg in chain:
+    notice = None  # one-shot in-game message on a state transition (down/up)
+    for used_tier, cfg in attempts:
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(snapshot)},
         ]
         try:
+            # Test hook: LLM_FAIL_EXPENSIVE=<code> injects a fake HTTP error on expensive calls so the
+            # rate-limit fallback/recovery path can be exercised offline.
+            inj = os.environ.get("LLM_FAIL_EXPENSIVE")
+            if used_tier == "expensive" and inj:
+                raise urllib.error.HTTPError(cfg["url"], int(inj), "injected", {}, None)
             content = call_llm(cfg, messages)
             plan = extract_json(content) or {}
-        except (urllib.error.URLError, urllib.error.HTTPError, KeyError, ValueError, TimeoutError) as e:
-            sys.stderr.write(f"[sidecar] {used_tier} call failed for {base}: {type(e).__name__}\n")
-            continue  # fall back to the next tier in the chain
+        except Exception as e:  # noqa: BLE001 - any call/parse failure -> try next tier
+            code, label, is_rl = http_err_info(e)
+            log("ERROR", f"{used_tier} call failed for {stem}: {label}")
+            if used_tier == "expensive" and is_rl:
+                if not expensive.cooling:  # transition OK -> cooling: tell the player in game
+                    notice = "Strong strategist model rate-limited - switching to the fast model."
+                    expensive.cooling = True
+                    log("WARN", f"expensive rate-limited ({label}); cooling {expensive.retry_after_s:.0f}s, "
+                                f"routing to cheap")
+                expensive.trip()
+            continue  # fall back to the next tier (expensive -> cheap only)
+
         if used_tier == "expensive":
-            budget.record()
-        kv = plan_to_kv(plan, current, kind)
-        cache[cache_key] = kv
-        write_atomic(resp_path, kv)
-        first = kv.splitlines()[0] if kv.strip() else "(empty)"
-        sys.stderr.write(f"[sidecar] {stem} ({used_tier}/{kind}): {first} ... ({len(plan)} keys)\n")
+            if expensive.cooling:  # transition cooling -> OK: recovered, tell the player
+                notice = "Strong strategist model back online."
+                expensive.cooling = False
+                log("INFO", "expensive tier recovered")
+            expensive.record_success()
+        kv, expl = plan_to_kv(plan, current, kind)
+        _emit(resp_path, cache, cache_key, kv, notice)
+        log("INFO", f"RESP {used_tier:<9} {kind:<4} {stem} ({len(plan)} keys)"
+                    + (f" [fell back from expensive]" if (req_tier == "expensive" and used_tier == "cheap") else ""))
+        if expl:
+            log("INFO", f"explanation: [{stem} {used_tier}] {expl}")
+        log("DEBUG", f"RESP-FULL {stem} {kv.strip()}")
+        if notice:
+            log("INFO", f"NOTICE (in-game) {stem}: {notice}")
         return
     # Every tier failed: leave no response; C++ keeps playing on its heuristic and retries next tick.
+    log("WARN", f"ALL-TIERS-FAILED {stem} -> heuristic floor this tick")
 
 
-def serve(cfgs, budget, spool, once, poll, stub):
+def serve(cfgs, expensive, spool, once, poll, stub):
     cache = {}
     prompt_cache = {}
     os.makedirs(spool, exist_ok=True)
     if stub:
-        sys.stderr.write(f"[sidecar] serving {spool} in STUB mode (no network)\n")
+        log("INFO", f"serving {spool} in STUB mode (no network)")
     else:
         have = [t for t in TIERS if cfgs.get(t)]
-        sys.stderr.write(f"[sidecar] serving {spool}; tiers available: {have or 'NONE (heuristic floor only)'}\n")
+        log("INFO", f"serving {spool}; tiers available: {have or 'NONE (heuristic floor only)'}")
     while True:
         for req in sorted(glob.glob(os.path.join(spool, "req_*.json"))):
-            handle_request(req, cache, cfgs, budget, prompt_cache, stub)
+            handle_request(req, cache, cfgs, expensive, prompt_cache, stub)
         if once:
             return
         time.sleep(poll)
@@ -745,9 +832,15 @@ def main():
     ap.add_argument("--selftest", action="store_true", help="make one tiny call and report")
     ap.add_argument("--stub", action="store_true", help="serve deterministic canned plans, no network")
     ap.add_argument("--min-interval", type=float, default=8.0,
-                    help="min seconds between expensive-tier calls (global)")
-    ap.add_argument("--hard-cap", type=int, default=0, help="max expensive-tier calls (0 = unlimited)")
+                    help="min seconds between expensive-tier calls (keeps cloud usage well under the cap)")
+    ap.add_argument("--retry-after", type=float, default=60.0,
+                    help="seconds to route around the expensive tier after a rate-limit before retrying")
+    # CLI overrides (handy to point a tier at a model/endpoint without editing .env).
+    ap.add_argument("--cheap-model"); ap.add_argument("--cheap-url")
+    ap.add_argument("--expensive-model"); ap.add_argument("--expensive-url")
     args = ap.parse_args()
+    _overrides = {"cheap": (args.cheap_url, args.cheap_model),
+                  "expensive": (args.expensive_url, args.expensive_model)}
 
     stub = args.stub or os.environ.get("LLM_STUB") in ("1", "true", "yes")
 
@@ -756,19 +849,32 @@ def main():
             print("SELFTEST OK — stub mode (no network)")
             return
         env = load_env_files()
-        cfg = build_cfg(env, "cheap", require_key=True) or build_cfg(env, "expensive", require_key=True)
-        if cfg is None:
+        any_cfg = False
+        any_ok = False
+        for t in TIERS:
+            cfg = build_cfg(env, t, require_key=False)
+            if cfg is None:
+                print(f"  {t:<9}: not configured")
+                continue
+            any_cfg = True
+            print(f"  {t:<9}: model='{cfg['model']}' url<-{cfg['url_from']} -> POST {cfg['url'].rstrip('/')}/chat/completions")
+            try:
+                reply = call_llm(cfg, [{"role": "user", "content": "Reply with exactly: OK"}])
+                print(f"             OK — replied: {reply.strip()[:50]!r}")
+                any_ok = True
+            except Exception as e:  # noqa: BLE001 - report each tier plainly with HTTP code
+                _, label, _ = http_err_info(e)
+                hint = ""
+                if getattr(e, "code", None) == 404:
+                    hint = "  (HTTP 404 -> wrong path? Ollama needs the URL to end in /v1)"
+                print(f"             FAILED: {label}{hint}")
+        if not any_cfg:
             print("SELFTEST FAILED: no usable LLM config (checked tier aliases + generic LLM_*)")
             sys.exit(1)
-        try:
-            reply = call_llm(cfg, [{"role": "user", "content": "Reply with exactly: OK"}])
-            print("SELFTEST OK — model replied:", reply.strip()[:60])
-        except Exception as e:  # noqa: BLE001 - report any failure plainly
-            print("SELFTEST FAILED:", type(e).__name__, str(e)[:200])
-            sys.exit(1)
-        return
+        print("SELFTEST OK" if any_ok else "SELFTEST FAILED: no tier answered")
+        sys.exit(0 if any_ok else 1)
 
-    budget = ExpensiveBudget(min_interval_s=args.min_interval, hard_cap=args.hard_cap)
+    expensive = ExpensiveTier(min_interval_s=args.min_interval, retry_after_s=args.retry_after)
 
     if stub:
         cfgs = {}
@@ -776,19 +882,36 @@ def main():
         env = load_env_files()
         cfgs = {t: build_cfg(env, t) for t in TIERS}
         cfgs = {t: c for t, c in cfgs.items() if c}
+        # Apply CLI overrides (override an existing tier's url/model, or build a minimal cfg from CLI -
+        # e.g. a keyless local Ollama: --cheap-url http://host:11434/v1 --cheap-model qwen2.5:7b-instruct-q4_K_M).
+        for t in TIERS:
+            url_o, model_o = _overrides[t]
+            if cfgs.get(t):
+                if url_o:
+                    cfgs[t]["url"], cfgs[t]["url_from"] = url_o, "--cli"
+                if model_o:
+                    cfgs[t]["model"], cfgs[t]["model_from"] = model_o, "--cli"
+            elif url_o and model_o:
+                d = TIER_DEFAULTS[t]
+                cfgs[t] = {"tier": t, "url": url_o, "key": "", "model": model_o, "url_from": "--cli",
+                           "key_from": "-", "model_from": "--cli", "temperature": d["temperature"],
+                           "max_tokens": d["max_tokens"], "timeout": d["timeout"]}
         for t in TIERS:
             c = cfgs.get(t)
             if c:
-                sys.stderr.write(
-                    f"[sidecar] {t}: url<-{c['url_from']}, key<-{c['key_from']}, "
-                    f"model<-{c['model_from']} (model='{c['model']}')\n")
+                log("INFO", f"tier {t}: url<-{c['url_from']}, key<-{c['key_from']}, "
+                            f"model<-{c['model_from']} (model='{c['model']}')")
             else:
-                sys.stderr.write(f"[sidecar] {t}: not configured (disabled)\n")
+                log("WARN", f"tier {t}: not configured (disabled)")
+        if cfgs.get("expensive") and cfgs.get("cheap") and cfgs["expensive"]["url"] == cfgs["cheap"]["url"] \
+           and cfgs["expensive"]["model"] == cfgs["cheap"]["model"]:
+            log("WARN", "expensive and cheap resolve to the SAME endpoint+model (only LLM_* set?). The "
+                        "frequent cheap calls will hit the cloud rate limit; set LLM_CHEAP_* to a local model.")
         if not cfgs:
-            sys.stderr.write("[sidecar] WARNING: no tier configured; every request leaves no response "
-                             "(the C++ AI plays its heuristic floor). Use --stub for offline testing.\n")
+            log("WARN", "no tier configured; every request leaves no response (C++ plays its heuristic "
+                        "floor). Use --stub for offline testing.")
 
-    serve(cfgs, budget, args.spool, args.once, args.poll, stub)
+    serve(cfgs, expensive, args.spool, args.once, args.poll, stub)
 
 
 if __name__ == "__main__":

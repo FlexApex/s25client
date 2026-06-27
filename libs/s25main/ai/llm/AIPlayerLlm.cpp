@@ -159,7 +159,11 @@ void AIPlayerLlm::RunGF(const unsigned gf, bool gfisnwf)
         contained_ = containedTicks_ >= 3;
         const EconStats s = gatherEconStats(ctx(), gf, llmDriven_);
         strategist_->Update(gf, ctx(), s, contained_, strategy_);
-        if(gf - lastChatGf_ >= 8000)
+        // IMPORTANT AI events (tier fallback/recovery, a fresh strategic plan) go to the in-game chat
+        // immediately so the player sees them; ordinary narration is throttled to every ~8000 GF.
+        if(std::string important = strategist_->takeImportantMessage(); !important.empty())
+            aii.Chat(important);
+        else if(gf - lastChatGf_ >= 8000)
         {
             aii.Chat(strategist_->lastRationale());
             lastChatGf_ = gf;
@@ -181,37 +185,26 @@ void AIPlayerLlm::RunGF(const unsigned gf, bool gfisnwf)
     if(std::getenv("RTTR_LLM_DEBUG") && gf % 12500 == 0)
     {
         const EconStats s = gatherEconStats(ctx(), gf);
-        // Iron-race diagnostics: own-territory iron/coal tiles near our centers (is the ore CLAIMED
-        // yet?), mine sites in flight, and the distance from our anchor to the nearest UNCLAIMED iron
-        // (how far the border still has to march). This is the binding early-tempo signal vs AIJH.
-        unsigned ironTerr = 0, coalTerr = 0;
-        std::vector<MapPoint> cs;
-        if(aii.GetHeadquarter())
-            cs.push_back(aii.GetHeadquarter()->GetPos());
-        for(const nobMilitary* m : aii.GetMilitaryBuildings())
-            cs.push_back(m->GetPos());
-        for(const MapPoint c : cs)
-            for(const MapPoint pt : gwb.GetPointsInRadius(c, 6))
-                if(aii.IsOwnTerritory(pt))
-                {
-                    const auto r = aii.GetSubsurfaceResource(pt);
-                    if(r == AISubSurfaceResource::Ironore)
-                        ++ironTerr;
-                    else if(r == AISubSurfaceResource::Coal)
-                        ++coalTerr;
-                }
+        // STONE diagnostics: stone production (quarries + inexhaustible granite mines) is the recurring
+        // binding constraint (smelters/armories need stone; stones=0 -> no weapons -> no soldiers ->
+        // late collapse). Show built+sites+want for each + distance to the nearest UNCLAIMED granite.
         const MapPoint anchor = AnchorPos();
-        const unsigned dIron =
-          anchor.isValid() ? nearestUnclaimedResourceDist(ctx(), anchor, AISubSurfaceResource::Ironore, 50) : 255u;
+        const unsigned dGran =
+          anchor.isValid() ? nearestUnclaimedResourceDist(ctx(), anchor, AISubSurfaceResource::Granite, 50) : 255u;
+        const auto w = ComputeWanted(s);
         std::fprintf(stderr,
-                     "[llm p%u gf%u] mil=%zu(blds) milSol=%u sites=%zu | ironTerr=%u coalTerr=%u distIron=%u | "
-                     "ironM=%zu(s%u) coalM=%zu smelt=%zu(s%u) armory=%zu sw=%u sh=%u stone=%u | tooMany=%d\n",
+                     "[llm p%u gf%u] mil=%zu milSol=%u | STONE=%u quarry=%zu(s%u w%u) granite=%zu(s%u w%u) distGran=%u "
+                     "| ironM=%zu coalM=%zu smelt=%zu(s%u w%u) armory=%zu(s%u w%u) sw=%u sh=%u | tooMany=%d\n",
                      playerId, gf, aii.GetMilitaryBuildings().size(),
-                     player.GetStatisticCurrentValue(StatisticType::Military), aii.GetBuildingSites().size(), ironTerr,
-                     coalTerr, dIron, aii.GetBuildings(BuildingType::IronMine).size(), CountSites(BuildingType::IronMine),
-                     aii.GetBuildings(BuildingType::CoalMine).size(), aii.GetBuildings(BuildingType::Ironsmelter).size(),
-                     CountSites(BuildingType::Ironsmelter), aii.GetBuildings(BuildingType::Armory).size(), s.swords,
-                     s.shields, s.stones, TooManyOpenSites() ? 1 : 0);
+                     player.GetStatisticCurrentValue(StatisticType::Military), s.stones,
+                     aii.GetBuildings(BuildingType::Quarry).size(), CountSites(BuildingType::Quarry),
+                     w[BuildingType::Quarry], aii.GetBuildings(BuildingType::GraniteMine).size(),
+                     CountSites(BuildingType::GraniteMine), w[BuildingType::GraniteMine], dGran,
+                     aii.GetBuildings(BuildingType::IronMine).size(), aii.GetBuildings(BuildingType::CoalMine).size(),
+                     aii.GetBuildings(BuildingType::Ironsmelter).size(), CountSites(BuildingType::Ironsmelter),
+                     w[BuildingType::Ironsmelter], aii.GetBuildings(BuildingType::Armory).size(),
+                     CountSites(BuildingType::Armory), w[BuildingType::Armory], s.swords, s.shields,
+                     TooManyOpenSites() ? 1 : 0);
     }
 }
 
@@ -221,11 +214,24 @@ void AIPlayerLlm::InitOnce()
 {
     const Persona persona = pickRandomPersona();
     // Use the LLM strategist when a spool dir is configured (RTTR_LLM_SPOOL); otherwise the built-in
-    // heuristic. RTTR_LLM_BLOCK_MS>0 switches to synchronous, reproducible LLM-in-the-loop mode.
+    // heuristic. Pacing for headless/accelerated eval:
+    //  - RTTR_LLM_SYNC=1  -> at each strategist tick, WAIT until the model's answer is in before
+    //    advancing (no-op if already in). No hard-coded latency: it blocks however long the model needs,
+    //    so ai-battle paces itself to the model exactly like a real game does at the same GF cadence. A
+    //    large safety cap only prevents a permanent hang if the sidecar is dead (then -> heuristic).
+    //    RTTR_LLM_SYNC=<ms> overrides that dead-sidecar cap.
+    //  - RTTR_LLM_BLOCK_MS=<ms> -> legacy fixed-cap blocking. Unset/0 + no SYNC -> async (real-time play;
+    //    the local model easily keeps up with the ~50s/tick real-game cadence).
     if(const char* spool = std::getenv("RTTR_LLM_SPOOL"); spool && *spool)
     {
         unsigned blockMs = 0;
-        if(const char* b = std::getenv("RTTR_LLM_BLOCK_MS"))
+        if(const char* s = std::getenv("RTTR_LLM_SYNC"); s && *s)
+        {
+            // RTTR_LLM_SYNC=1 (or any flag) => wait until the answer is in (no hard-coded latency); the
+            // 10-min cap is only a dead-sidecar backstop. A large explicit value (>1000 ms) overrides it.
+            const int v = std::atoi(s);
+            blockMs = v > 1000 ? static_cast<unsigned>(v) : 600000u;
+        } else if(const char* b = std::getenv("RTTR_LLM_BLOCK_MS"))
             blockMs = static_cast<unsigned>(std::atoi(b));
         strategist_ = std::make_unique<LlmStrategist>(playerId, spool, blockMs, persona);
         llmDriven_ = true;
@@ -333,8 +339,14 @@ helpers::EnumArray<unsigned, BuildingType> AIPlayerLlm::ComputeWanted(const Econ
     // specialist economy (especially the weapons chain) sits unstaffed. Scale with the empire.
     w[BuildingType::Metalworks] = std::min(5u, std::max(2u, R(terr * 0.12)));
     // Smelters track finished iron mines (one buffer site to stay slightly ahead). Armories track
-    // finished smelters. This keeps the weapons chain growing without spawning unbuildable sites.
-    w[BuildingType::Ironsmelter] = fIron > 0 ? std::min(fIron + 1, 10u) : (haveIronMine ? 1u : 0u);
+    // finished smelters. ALSO cap PENDING smelter sites to fSmelter+3: smelters are stone-gated (2 stone
+    // each), so when stone runs out the want-off-iron (up to 10) spawned ~17 stuck sites that clogged the
+    // open-sites ceiling and froze the economy. Capping to finished+3 lets the chain grow only as fast as
+    // smelters actually complete, so a stone shortage can never clog the queue.
+    {
+        const unsigned smByIron = fIron > 0 ? std::min(fIron + 1, 10u) : (haveIronMine ? 1u : 0u);
+        w[BuildingType::Ironsmelter] = std::min(smByIron, fSmelter + 3u);
+    }
     w[BuildingType::Armory] = fSmelter > 0 ? std::min(fSmelter * 2u, R(terr * 0.6 * mW)) : 0u;
     w[BuildingType::Brewery] = std::max(1u, R(terr * 0.18));
     w[BuildingType::Mill] = fFarm > 0 ? std::max(1u, (fFarm + 1) / 3) : (haveFarm ? 1u : 0u);
@@ -691,10 +703,17 @@ BuildingType AIPlayerLlm::ChooseMilitaryType(const EconStats& s) const
 
 MapPoint AIPlayerLlm::NearestNeededOre(const EconStats& s) const
 {
+    const unsigned nGranite = NumBuildings(BuildingType::GraniteMine);
+    // STONE is the most foundational resource under this ruleset: it gates military buildings AND the
+    // smelter/armory chain AND farms. When we're stone-critical with no granite mine, iron ore is
+    // useless (we can't build the smelter to use it), so claim a GRANITE mountain FIRST. (Measured: the
+    // LLM otherwise chased iron until ~gf125k, never claimed granite 27 tiles out, ran stones=0 all game,
+    // and 17 smelter sites stuck unbuilt -> clog -> collapse.) Granite mines are inexhaustible here.
+    const bool stoneCritical = s.stones < 25 && nGranite < 2;
     const bool needIron = NumBuildings(BuildingType::IronMine) < 4;
     const bool needCoal = NumBuildings(BuildingType::CoalMine) < 5;
-    const bool needGranite = NumBuildings(BuildingType::GraniteMine) < 2 && s.stones < 60;
-    if(!needIron && !needCoal && !needGranite)
+    const bool needGranite = nGranite < 2 && s.stones < 60;
+    if(!stoneCritical && !needIron && !needCoal && !needGranite)
         return MapPoint::Invalid();
 
     // GetHeadquarter() is null-safe now, but storehouses (incl. HQ) are a robust center even after an
@@ -708,8 +727,15 @@ MapPoint AIPlayerLlm::NearestNeededOre(const EconStats& s) const
         return MapPoint::Invalid();
 
     const AIContext c = ctx();
-    // Iron is the long pole of the weapons chain, so prefer it; fall back to the closer of coal/granite.
-    // Uses the shared radius-scan primitive (M4.1) so the ore-march and the digests agree on geometry.
+    // Stone first when critical: secure the granite mountain that unblocks the whole economy.
+    if(stoneCritical)
+    {
+        const MapPoint g = nearestUnclaimedResource(c, center, AISubSurfaceResource::Granite, 42);
+        if(g.isValid())
+            return g;
+    }
+    // Then iron (long pole of the weapons chain), then the closer of coal/granite. Uses the shared
+    // radius-scan primitive (M4.1) so the ore-march and the digests agree on geometry.
     const MapPoint bestIron =
       needIron ? nearestUnclaimedResource(c, center, AISubSurfaceResource::Ironore, 42) : MapPoint::Invalid();
     if(bestIron.isValid())

@@ -34,6 +34,7 @@ public:
                 Strategy& strategy) override;
     const std::string& lastRationale() const override { return rationale_; }
     const GamePlan& gamePlan() const override { return plan_; }
+    std::string takeImportantMessage() override;
 
 private:
     /// Which model tier a request targets. Cheap = fast tactician (every tick); Expensive = strong
@@ -136,6 +137,8 @@ private:
     unsigned lastLlmGf_ = 0;   // gf the last knob plan was received
     unsigned lastWarnGf_ = 0;  // throttle failure warnings
     std::string rationale_;
+    std::string pendingNotice_;     // IMPORTANT in-game message to surface once (fallback/recovery/new plan)
+    std::string lastAnnouncedPlan_; // strategyName last announced in-game (so we chat a plan only when it changes)
 
     unsigned numPlayers_ = 0; // sized once; clamps player-id fields and trend memory
 

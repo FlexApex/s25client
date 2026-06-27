@@ -43,6 +43,10 @@ public:
     /// Optional human-readable note about the last decision (for chat narration / debugging).
     virtual const std::string& lastRationale() const = 0;
 
+    /// Pop a pending IMPORTANT in-game message (tier fallback/recovery, a fresh strategic plan), or "" if
+    /// none. The executor prints it to the in-game chat immediately. Default: none (heuristic floor).
+    virtual std::string takeImportantMessage() { return {}; }
+
     /// The long-lived GamePlan currently in effect (empty/no-op for the heuristic). The executor reads
     /// the projected fields off `Strategy`, so this is a uniform accessor for diagnostics/future use.
     virtual const GamePlan& gamePlan() const = 0;

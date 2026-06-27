@@ -93,15 +93,48 @@ RTTR_LLM_SPOOL=/tmp/rttr_llm RTTR_LLM_BLOCK_MS=3000 ai-battle -m MAP --ai llm --
 ```
 Run the real sidecar, then the game pointed at the same spool dir:
 ```
-python3 extras/ai-battle/llm_sidecar.py --spool /tmp/rttr_llm &
-RTTR_LLM_SPOOL=/tmp/rttr_llm RTTR_LLM_BLOCK_MS=25000 \
+python3 extras/ai-battle/llm_sidecar.py --spool /tmp/rttr_llm 2>llm.log &
+RTTR_LLM_SPOOL=/tmp/rttr_llm RTTR_LLM_SYNC=1 \
   ai-battle -m MAP --ai llm --ai aijh ...
 ```
-- `RTTR_LLM_SPOOL` set → the `llm` AI uses the model; unset → heuristic.
-- `RTTR_LLM_BLOCK_MS>0` → synchronous (reproducible) LLM-in-the-loop; `0`/unset → async (for live
-  GUI play: the plan is applied a tick after it is requested, so the game never stalls).
+
+### Two tiers (.env)
+Both tiers are OpenAI-compatible endpoints. Resolution: tier-specific key first, then generic `LLM_*`.
+- **Expensive** (strong, rate-limited; rare strategic plans): `LLM_EXPENSIVE_URL/MODEL/APIKEY`, or the
+  generic `LLM_URL/LLM_MODEL/LLM_APIKEY` as a fallback.
+- **Cheap** (fast/unlimited, e.g. local Ollama; frequent tactical ticks): `LLM_CHEAP_URL/MODEL/APIKEY`.
+  For Ollama: `LLM_CHEAP_URL=http://<host>:11434/v1` and `LLM_CHEAP_MODEL=<exact name from ollama list>`
+  (e.g. `qwen2.5:7b-instruct-q4_K_M` — a wrong/short name gives HTTP 404). Key is ignored by Ollama.
+- CLI overrides (no `.env` edit): `--cheap-url`, `--cheap-model`, `--expensive-url`, `--expensive-model`.
+- `--selftest` probes each configured tier and reports the HTTP result per tier.
+
+### Pacing
+- `RTTR_LLM_SYNC=1` → at each strategist tick the game WAITS until the model's answer is in (no-op if
+  already in; no hard-coded latency — it blocks however long the model needs, with a 10-min dead-sidecar
+  backstop). Use this for accelerated headless eval so the game paces itself to the model. `=<ms>`
+  overrides the backstop.
+- `RTTR_LLM_BLOCK_MS=<ms>` → legacy fixed-cap blocking. Unset + no `SYNC` → async (live GUI play: the
+  local model easily keeps up with the ~50 s/tick real-game cadence; never stalls).
+
+### Fallback, in-game messages & robustness
+- Only fallback is **expensive → cheap**: if the expensive tier is rate-limited (HTTP 429/503/529) the
+  sidecar cools it down for `--retry-after` seconds (default 60) and routes to cheap, printing an
+  **in-game** message; on recovery it prints another. Expensive calls are spaced by `--min-interval`
+  (default 8 s) so cloud usage stays well under the rpm cap.
+- Important AI events (tier fallback/recovery, a fresh strategic plan) are surfaced in the **in-game
+  chat**; ordinary narration (the model's one-line `explanation`) is throttled.
 - Sidecar absent/slow/garbled → the AI plays its full heuristic floor and auto-recovers when the
   sidecar returns (validated by killing the sidecar mid-game: the game runs to completion, exit 0).
+
+### Logging / observability (trace on a second monitor)
+The sidecar logs leveled, greppable lines to stderr (`LLM_LOG_LEVEL=DEBUG|INFO|WARN|ERROR`, default INFO):
+```
+tail -f llm.log | grep 'explanation:'              # the model's one-line reasoning per response
+tail -f llm.log | grep -E ' (REQ|RESP) '           # request/response trace (tier, kind, player, gf)
+tail -f llm.log | grep -E ' (WARN|ERROR) '         # HTTP codes, rate-limits, fallbacks
+```
+`LLM_LOG_LEVEL=DEBUG` additionally emits the full request/response JSON (`REQ-FULL` / `RESP-FULL`).
+Each model response includes a required human-readable `explanation` one-liner.
 
 ## Protocol (file oracle)
 

@@ -570,6 +570,8 @@ bool LlmStrategist::tryReadResponse(unsigned gf, Strategy& out, GamePlan& plan, 
             haveRawExpand = true;
         } else if(k == "requestReplan")
             tick.requestReplan = parseBool(v);
+        else if(k == "notice")  // sidecar system event (tier fallback/recovery) -> surface in-game
+            pendingNotice_ = v;
         else
             continue;        // unknown key -> ignore, do NOT count as a known/usable plan (B3)
         parsedKnown = true;  // reached only when a recognised key matched
@@ -594,6 +596,14 @@ bool LlmStrategist::tryReadResponse(unsigned gf, Strategy& out, GamePlan& plan, 
     {
         plan.valid = true;
         plan.planGf = gf;
+        // Announce a genuinely NEW strategic plan in-game (unless a system notice already claimed this
+        // tick's message). Important AI event the player should see.
+        if(!plan.strategyName.empty() && plan.strategyName != lastAnnouncedPlan_)
+        {
+            lastAnnouncedPlan_ = plan.strategyName;
+            if(pendingNotice_.empty())
+                pendingNotice_ = "New strategy: " + plan.strategyName + (chat.empty() ? "" : " - " + chat);
+        }
     }
     return true;
 }
@@ -858,6 +868,13 @@ void LlmStrategist::detectEvents(unsigned /*gf*/, const EconStats& s)
     lastSnapMil_ = s.myMilitary;
     lastSnapNMil_ = s.nMil;
     lastSnapBestEnemyMil_ = s.bestEnemyMilitary;
+}
+
+std::string LlmStrategist::takeImportantMessage()
+{
+    std::string m;
+    m.swap(pendingNotice_); // hand it off once (cleared so we don't repeat it)
+    return m;
 }
 
 void LlmStrategist::Update(unsigned gf, const AIContext& ctx, const EconStats& stats, bool contained,

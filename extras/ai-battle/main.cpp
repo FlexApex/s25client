@@ -16,6 +16,7 @@
 #include "s25util/System.h"
 #include "s25util/strAlgos.h"
 
+#include <cstdlib>
 #include <memory>
 #include <boost/filesystem.hpp>
 #include <boost/nowide/args.hpp>
@@ -192,6 +193,9 @@ int main(int argc, char** argv)
             game->RecordReplay(*replay_path, random_init);
         if(options.count("stats"))
             game->EnableStats(options["stats"].as<std::string>(), options["statsInterval"].as<unsigned>());
+
+        if(std::getenv("RTTR_ANALYZE")) // one-shot food/mine economy dump of the loaded (or freshly built) state
+            game->AnalyzeEconomy();
 
         game->Run(options["maxGF"].as<unsigned>());
         game->Close();

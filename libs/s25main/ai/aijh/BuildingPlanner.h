@@ -33,6 +33,9 @@ public:
 
     /// Return the number of buildings that we want to build of the current type
     int GetNumAdditionalBuildingsWanted(BuildingType type) const;
+    /// How many buildings of a type are currently wanted (read/write; used by subclassed AIs to refine plans)
+    unsigned GetBuildingsWanted(BuildingType type) const { return buildingsWanted[type]; }
+    void SetBuildingsWanted(BuildingType type, unsigned count) { buildingsWanted[type] = count; }
     /// Checks whether the ai wants to construct more mil buildings atm
     bool WantMoreMilitaryBlds(const AIPlayerJH& aijh) const;
     bool IsExpansionRequired() const { return expansionRequired; }
@@ -46,18 +49,5 @@ private:
 
     void RefreshBuildingNums(const AIPlayerJH& aijh);
     bool CalcIsExpansionRequired(AIPlayerJH& aijh, bool recalc) const;
-    /// Improved strategy only: scale the production chain with the actual economy so the AI keeps
-    /// growing instead of plateauing at small hardcoded ceilings. Only ever raises wants.
-    void ApplyImprovedScaling(const AIPlayerJH& aijh, unsigned numMilitaryBlds, unsigned foodusers);
-    /// Improved strategy only: scale STONE production (quarries + granite mines) with construction
-    /// demand so the AI does not starve on stone (and stall all building) on stone-poor maps. Unlike
-    /// ApplyImprovedScaling this must run *when stone is low*, so it is not behind a surplus gate.
-    void ApplyImprovedStoneSupply(const AIPlayerJH& aijh, unsigned numMilitaryBlds);
-    /// Improved strategy only: scale FOOD production with mine demand so mines do not idle for lack of
-    /// food. The baseline freezes farms at ~half the available farmers and lets grain-eating charburners
-    /// starve the bread chain. Fires only when mines are under-fed, so it is no-op on well-fed/space-poor
-    /// maps; bounded by farmer/empire size and graceful placement so it can't over-build where there is
-    /// no farmland.
-    void ApplyImprovedFoodSupply(const AIPlayerJH& aijh, unsigned numMilitaryBlds);
 };
 } // namespace AIJH

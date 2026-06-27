@@ -23,11 +23,12 @@ enum class Type : uint8_t
 {
     Dummy,
     Default,
-    Llm
+    Llm,
+    ApexAI
 };
 constexpr auto maxEnumValue(Type)
 {
-    return Type::Llm;
+    return Type::ApexAI;
 }
 
 struct Info

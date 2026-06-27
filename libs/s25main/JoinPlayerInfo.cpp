@@ -46,6 +46,19 @@ void JoinPlayerInfo::SetAIName(unsigned playerId)
 
 std::string JoinPlayerInfo::MakeAIName(const AI::Info& aiInfo, unsigned playerId)
 {
+    // ApexAI is its own brand in the menu: "ApexAI (leicht|mittel|schwer)".
+    if(aiInfo.type == AI::Type::ApexAI)
+    {
+        std::string name = "ApexAI";
+        switch(aiInfo.level)
+        {
+            case AI::Level::Easy: name += _(" (easy)"); break;
+            case AI::Level::Medium: name += _(" (medium)"); break;
+            case AI::Level::Hard: name += _(" (hard)"); break;
+        }
+        return name;
+    }
+
     std::string name =
       (boost::format((aiInfo.type == AI::Type::Dummy) ? _("Dummy %u") : _("Computer %u")) % playerId).str();
     name += _(" (AI)");
@@ -54,7 +67,7 @@ std::string JoinPlayerInfo::MakeAIName(const AI::Info& aiInfo, unsigned playerId
     {
         switch(aiInfo.level)
         {
-            case AI::Level::Easy: name += _(" (baseline AI)"); break;
+            case AI::Level::Easy: name += _(" (easy)"); break;
             case AI::Level::Medium: name += _(" (medium)"); break;
             case AI::Level::Hard: name += _(" (hard)"); break;
         }

@@ -18,6 +18,7 @@
 #include "factories/GameCommandFactory.h"
 #include "ai/aijh/AIPlayerJH.h"
 #include "ai/llm/AIPlayerLlm.h"
+#include "buildings/nobUsual.h"
 #include "factories/AIFactory.h"
 #include "network/PlayerGameCommands.h"
 #include "world/GameWorld.h"
@@ -98,13 +99,13 @@ HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, 
     improved_.clear();
     for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
     {
-        const AI::Info& aiInfo = world_.GetPlayer(playerId).aiInfo;
-        const bool useImproved = !helpers::contains(baselinePlayers, playerId);
-        improved_.push_back(useImproved && aiInfo.type == AI::Type::Default);
-        if(aiInfo.type == AI::Type::Default)
-            players_.push_back(std::make_unique<AIJH::AIPlayerJH>(playerId, world_, aiInfo.level, useImproved));
-        else
-            players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
+        AI::Info aiInfo = world_.GetPlayer(playerId).aiInfo;
+        // --baseline forces an ApexAI slot back to the original AIJH, so the improved (ApexAI) and the
+        // baseline (AIJH) strategies can be A/B-compared in the same game.
+        if(helpers::contains(baselinePlayers, playerId) && aiInfo.type == AI::Type::ApexAI)
+            aiInfo.type = AI::Type::Default;
+        improved_.push_back(aiInfo.type == AI::Type::ApexAI);
+        players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
     }
 
     world_.InitAfterLoad();
@@ -161,7 +162,7 @@ HeadlessGame::HeadlessGame(std::unique_ptr<Savegame> save)
     for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
     {
         const AI::Info& aiInfo = world_.GetPlayer(playerId).aiInfo;
-        improved_.push_back(aiInfo.type == AI::Type::Default);
+        improved_.push_back(aiInfo.type == AI::Type::ApexAI);
         players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
         const GamePlayer& pl = world_.GetPlayer(playerId);
         const MapPoint hq = pl.GetHQPos();
@@ -309,6 +310,82 @@ void HeadlessGame::WriteStatsRow()
     std::fflush(statsFile_);
 }
 
+void HeadlessGame::AnalyzeEconomy() const
+{
+    // Per-building-type roll-up: count, how many are idle (productivity 0), average productivity,
+    // and (for consumers like mines) how much input food they currently hold.
+    const auto roll = [&](const GamePlayer& pl, BuildingType bt) {
+        const auto& blds = pl.GetBuildingRegister().GetBuildings(bt);
+        unsigned n = 0, idle = 0, noWorker = 0, prodSum = 0, foodOnHand = 0;
+        for(const nobUsual* b : blds)
+        {
+            ++n;
+            const unsigned p = b->GetProductivity();
+            prodSum += p;
+            if(p == 0)
+                ++idle;
+            if(!b->HasWorker())
+                ++noWorker;
+            foodOnHand += b->GetNumWares(0) + b->GetNumWares(1) + b->GetNumWares(2);
+        }
+        return std::array<unsigned, 5>{n, idle, noWorker, n ? prodSum / n : 0, foodOnHand};
+    };
+    const auto line = [&](const GamePlayer& pl, const char* label, BuildingType bt, bool showFood) {
+        const auto r = roll(pl, bt);
+        if(r[0] == 0)
+            return;
+        bnw::cout << "    " << label << ": " << r[0] << "  idle=" << r[1] << " noWorker=" << r[2]
+                  << " avgProd=" << r[3];
+        if(showFood)
+            bnw::cout << " foodOnHand=" << r[4];
+        bnw::cout << '\n';
+    };
+
+    bnw::cout << "\n==================== ECONOMY ANALYSIS (loaded state, GF=" << em_.GetCurrentGF()
+              << ") ====================\n";
+    for(unsigned p = 0; p < world_.GetNumPlayers(); ++p)
+    {
+        const GamePlayer& pl = world_.GetPlayer(p);
+        const AI::Info& aiInfo = pl.aiInfo;
+        if(aiInfo.type != AI::Type::Default && aiInfo.type != AI::Type::ApexAI && aiInfo.type != AI::Type::Llm)
+            continue; // skip humans / dummies
+        const Inventory& inv = pl.GetInventory();
+        const MapPoint hq = pl.GetHQPos();
+        bnw::cout << "\n-- player " << p << " '" << pl.name << "' aiType=" << static_cast<unsigned>(aiInfo.type)
+                  << " HQ=(" << hq.x << "," << hq.y << ")" << (pl.IsDefeated() ? " [defeated]" : "") << " --\n";
+
+        bnw::cout << "  FOOD PRODUCTION:\n";
+        line(pl, "Farm        ", BuildingType::Farm, false);
+        line(pl, "Mill        ", BuildingType::Mill, false);
+        line(pl, "Bakery      ", BuildingType::Bakery, false);
+        line(pl, "PigFarm     ", BuildingType::PigFarm, false);
+        line(pl, "Slaughterhse", BuildingType::Slaughterhouse, false);
+        line(pl, "Fishery     ", BuildingType::Fishery, false);
+        line(pl, "Hunter      ", BuildingType::Hunter, false);
+        line(pl, "Well        ", BuildingType::Well, false);
+        line(pl, "Brewery     ", BuildingType::Brewery, false);
+        line(pl, "DonkeyBreedr", BuildingType::DonkeyBreeder, false);
+        line(pl, "Charburner  ", BuildingType::Charburner, false);
+
+        bnw::cout << "  MINES (consume food):\n";
+        line(pl, "CoalMine    ", BuildingType::CoalMine, true);
+        line(pl, "IronMine    ", BuildingType::IronMine, true);
+        line(pl, "GoldMine    ", BuildingType::GoldMine, true);
+        line(pl, "GraniteMine ", BuildingType::GraniteMine, true);
+
+        bnw::cout << "  WARE STOCKS:  grain=" << inv.goods[GoodType::Grain] << " flour=" << inv.goods[GoodType::Flour]
+                  << " bread=" << inv.goods[GoodType::Bread] << " meat=" << inv.goods[GoodType::Meat]
+                  << " ham=" << inv.goods[GoodType::Ham] << " fish=" << inv.goods[GoodType::Fish]
+                  << " water=" << inv.goods[GoodType::Water] << " beer=" << inv.goods[GoodType::Beer] << '\n';
+        bnw::cout << "  WORKERS/TOOLS: farmer=" << inv.people[Job::Farmer] << " scythe=" << inv.goods[GoodType::Scythe]
+                  << " | miner=" << inv.people[Job::Miner] << " pickaxe=" << inv.goods[GoodType::PickAxe]
+                  << " | baker=" << inv.people[Job::Baker] << " butcher=" << inv.people[Job::Butcher]
+                  << " miller=" << inv.people[Job::Miller] << " fisher=" << inv.people[Job::Fisher]
+                  << " helpers=" << inv.people[Job::Helper] << '\n';
+    }
+    bnw::cout << "\n=================================================================================\n\n";
+}
+
 void HeadlessGame::Close()
 {
     bnw::cout << '\n';
@@ -423,6 +500,7 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, con
         switch(ai.type)
         {
             case AI::Type::Default: pi.name = "AIJH " + std::to_string(ret.size()); break;
+            case AI::Type::ApexAI: pi.name = "ApexAI " + std::to_string(ret.size()); break;
             case AI::Type::Llm: pi.name = "LLM " + std::to_string(ret.size()); break;
             case AI::Type::Dummy:
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;

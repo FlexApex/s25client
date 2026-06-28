@@ -1,0 +1,6 @@
+# Per-run eval output (logs, stats CSVs, summaries) — regenerated on every run.
+results/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

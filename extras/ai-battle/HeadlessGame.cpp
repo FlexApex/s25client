@@ -95,6 +95,7 @@ HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, 
     MapLoader loader(world_);
     if(!loader.Load(map))
         throw std::runtime_error("Could not load " + map.string());
+    MapLoader::SetupResources(world_, true);
 
     players_.clear();
     improved_.clear();

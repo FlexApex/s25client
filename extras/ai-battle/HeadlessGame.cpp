@@ -255,6 +255,8 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, con
         switch(ai.type)
         {
             case AI::Type::Default: pi.name = "AIJH " + std::to_string(ret.size()); break;
+            case AI::Type::ApexAI: pi.name = "ApexAI " + std::to_string(ret.size()); break;
+            case AI::Type::Llm: pi.name = "LLM " + std::to_string(ret.size()); break;
             case AI::Type::Dummy:
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;
         }

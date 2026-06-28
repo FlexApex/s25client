@@ -28,6 +28,7 @@
 #include "gameTypes/JobTypes.h"
 #include "gameTypes/MapInfo.h"
 #include "gameTypes/StatisticTypes.h"
+#include "s25util/colors.h"
 #include "gameData/GameConsts.h"
 #include "helpers/containerUtils.h"
 #include <boost/nowide/iostream.hpp>
@@ -506,6 +507,7 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, con
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;
         }
         pi.nation = Nation::Romans;
+        pi.color = PLAYER_COLORS[ret.size() % PLAYER_COLORS.size()];
         pi.team = (ret.size() < teams.size()) ? teams[ret.size()] : Team::None;
         ret.push_back(pi);
     }

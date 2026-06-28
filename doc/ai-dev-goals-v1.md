@@ -32,14 +32,15 @@ challenge across long games and entirely its own player.
   local guesses.
 
 ### Competitiveness — the definition of done
-- Evaluated **against AIJH** and able to **compete at the Hard level**.
-- Only considered done when it is genuinely competitive with AIJH-Hard across a **variety of maps** —
-  specifically **FL-Macro2.SWD, Macro144.SWD, and AtomicFL.SWD** — judged over multiple seeds and
-  both start orientations (single games are noise).
-- **No plateau**: keeps developing across a full ~4-hour game and does not stall or get out-macroed
-  late (the old AI's main failing — it was also too oppressive early).
-- Evaluated under the real playing ruleset: **2v2, Hard, inexhaustible mines, gold→granite** (so
-  military strength = soldier count).
+- Evaluated **against AIJH** at the **Hard** level, measured by the **ai-eval** harness
+  (`tools/ai-eval` — `--challenger <ai> --baseline aijh`). Genuinely competitive means at least parity
+  (≈50% win share) across the harness's map/seed/orientation suite; a **PASS** (95% CI lower bound
+  above 50% — significantly stronger than AIJH) is the stretch goal. Single games are noise; trust the
+  harness's confidence-interval verdict.
+- **No plateau**: keeps developing across a full long game and does not stall or get out-macroed late
+  (the old AI's main failing — it was also too oppressive early).
+- The maps and ruleset (inexhaustible mines, gold→granite, so military strength ≈ soldier count) are
+  defined by ai-eval — see `tools/ai-eval/README.md`.
 
 ### Resource use
 - **Frugal, sustainable LLM cost**: keep the rate-limited cloud model (≈40 rpm cap) usage **well
@@ -57,7 +58,7 @@ challenge across long games and entirely its own player.
   the setup, and resume.
 
 ## Done when
-The AI plays a recognizably **human-like, varied** game and **holds its own against AIJH-Hard** on
-FL-Macro2, Macro144, and AtomicFL — **growing steadily across long games without plateauing** — while
-keeping **cloud-LLM usage light and sustainable** (leaning on the local model), and remaining robust
-enough to use in real GUI matches.
+The AI plays a recognizably **human-like, varied** game and **holds its own against AIJH-Hard** as
+measured by `tools/ai-eval` (≈50% or better; a PASS verdict is the stretch goal) — **growing steadily
+across long games without plateauing** — while keeping **cloud-LLM usage light and sustainable**
+(leaning on the local model), and remaining robust enough to use in real GUI matches.

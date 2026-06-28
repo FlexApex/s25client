@@ -16,32 +16,31 @@ Guidance for AI agents working on **s25client** (Return to the Roots).
 - **Tests:** add/extend tests for each fix or feature; keep them small and descriptive; account for RNG variability.
 - **Avoid** unnecessary `else` after `return`, and duplicated code (factor it out).
 
-## AI testing (ai-battle / LLM AI)
+## AI testing (ai-eval / ai-battle / LLM AI)
 
-When evaluating an AI's competitiveness, test on these maps (all under the same ruleset below):
+Evaluate an AI's competitiveness with the **ai-eval** harness (`tools/ai-eval`). It plays many headless
+1v1 games against a baseline (default AIJH) over a fixed set of symmetric maps and seeds in **both start
+orientations**, then reports a win share with a 95% confidence interval and a **PASS/FAIL** verdict
+(PASS = significantly stronger than the baseline). The bar is to stay competitive with **AIJH-Hard**.
 
-- **FL-Macro2.SWD**
-- **Macro144.SWD**
-- **AtomicFL.SWD**
+```sh
+# build the runner, then evaluate ApexAI vs AIJH over 8 seeds (48 games)
+cmake --build build --target ai-battle -j
+python3 tools/ai-eval/eval.py --challenger apex --baseline aijh --num-seeds 8
+```
 
-Across **multiple seeds and both map orientations**, under: **2v2, Hard, inexhaustible mines,
-gold→granite** (no gold deposits, so military strength = soldier count). The bar is to stay
-competitive with **AIJH-Hard** with **no plateau** over long (~4h, ~288k GF) games.
+Maps, ruleset (inexhaustible mines + gold→granite), start positions, early-abort and scoring are all
+defined by the harness — see `tools/ai-eval/README.md`. Run from the repo root; when testing a build
+tree other than `build/`, pass `--bin <dir>/bin/ai-battle` and `--mapdir <dir>/share/s25rttr/RTTR/MAPS/NEW`
+(and set `RTTR_RTTR_DIR="$PWD/data/RTTR"`).
 
-### Tooling (from master's ai-battle harness)
+### Underlying tools
 
-Build the headless tools with the normal CMake build; binaries land in `build/bin/`.
-
-- **`ai-battle`** — runs an AI-only game with no window/rendering. AI names: `aijh`, `apex`/`apexai`,
-  `llm`, `dummy`. The ruleset above maps to flags:
-  `ai-battle -m <map> --ai apex --ai aijh --ai apex --ai aijh --teams "0,2;1,3" --inexhaustibleMines --goldDeposits 4 --maxGF 288000`
-  - `--stats <csv> --statsInterval <gf>` — per-player trajectory log (machine-readable A/B data).
-  - `--baseline <idx...>` — make those players use the *original* (unimproved) AIJH for A/B testing.
-  - `--save <f.sav>` / `--replay <f.rpl>` — write a savegame / record a replay; pass a `.sav` as `-m` to continue it.
-  - `RTTR_ANALYZE=1 ai-battle ...` — one-shot food-chain + mine-state economy dump of the loaded state.
-- **`replay-verify <game.rpl>`** — headless replay desync checker (exit 0 in-sync, 2 desync). Reports the
-  first divergent GF and which checksum field broke. Diagnostic env switches: `RTTR_VERIFY_TRACE`,
-  `RTTR_VERIFY_RUN_AI`, `RTTR_VERIFY_NO_SETUPRES`, `RTTR_VERIFY_NO_PACTS`. See `extras/replay-verify/README.md`.
+- **`ai-battle`** — the headless game runner ai-eval drives. AI names: `aijh`, `apex`/`apexai`, `llm`,
+  `dummy`. Also useful standalone for one-off games: replays (`--replay`), savegames (`--save`; pass a
+  `.sav` as `-m` to continue), trajectory stats (`--stats`), and `RTTR_ANALYZE=1` economy dumps.
+- **`replay-verify <game.rpl>`** — headless replay desync checker (exit 0 in-sync, 2 desync). See
+  `extras/replay-verify/README.md`.
 - **LLM AI** — `extras/ai-battle/llm_sidecar.py` is the runtime companion for the `llm` AI (spool dir via
   `RTTR_LLM_SPOOL`); `extras/ai-battle/run_llm_game.sh <map>` starts the sidecar + a game and cleans up.
 

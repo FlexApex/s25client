@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "GameClient.h"
+#include "ai/random.h"
 #include "CreateServerInfo.h"
 #include "EventManager.h"
 #include "Game.h"
@@ -288,6 +289,7 @@ void GameClient::StartGame(const unsigned random_init)
 
     // Random-Generator initialisieren
     RANDOM.Init(random_init);
+    AI::getRandomGenerator().seed(random_init);
 
     if(!IsReplayModeOn() && mapinfo.savegame && !mapinfo.savegame->Load(mapinfo.filepath, SaveGameDataToLoad::All))
     {

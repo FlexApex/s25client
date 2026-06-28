@@ -68,11 +68,38 @@ populated land reaches `--dominance-factor`× the other's (default 3×, after 60
 | `--jobs N` | cpus-1 | games run in parallel |
 | `--stats` | off | also write per-game trajectory CSVs |
 
-Output: a per-map and overall W/L/D table with the 95% CI and a `PASS`/`FAIL`/`INCONCLUSIVE` verdict.
-The run lands under `ai-battle-runs/eval/<timestamp>_<challenger>_vs_<baseline>/`: a run-level `summary.json`
-over all games, and a `games/<map>_seed<N>_o<0|1>/` subfolder per game holding all of that game's artefacts
-(invocation, console log, parsed `result.json`, replay `.rpl`, final `.sav`, and the trajectory `.csv` with
-`--stats`). See `ai-battle-runs/README.md` for the full layout.
+## Output
+
+On the console you get a per-map and overall W/L/D table with the 95% CI and a
+`PASS`/`FAIL`/`INCONCLUSIVE` verdict.
+
+On disk, the whole run is collected under one folder (override with `--out-dir`), and **every game gets
+its own subfolder holding all of that game's artefacts** so any single game is fully inspectable and
+reproducible in isolation:
+
+```
+ai-battle-runs/eval/<timestamp>_<challenger>_vs_<baseline>[_<label>]/   ← the run folder
+├── summary.json                         ← summary over ALL games: run config, per-map and overall W/L/D,
+│                                           win-share, 95% CI, PASS/FAIL verdict, and one record per game
+└── games/                               ← one subfolder per game played
+    └── <map>_seed<N>_o<0|1>/            ← e.g. dreamland_seed1007_o0  (orientation 0 or 1)
+        ├── invocation.json              ← setup: exact ai-battle command, AIs + their slots, seed, map,
+        │                                   and ruleset (maxGF, gold deposits, mines, dominance abort)
+        ├── game.log                     ← full ai-battle console output, incl. the RESULT block
+        ├── result.json                  ← parsed outcome (verdict, winner, gf, land margin) + end-of-game
+        │                                   stats per player: country/military/buildings/inhabitants/
+        │                                   productivity/soldiers/milblds
+        ├── replay.rpl                   ← replay, re-watchable and re-verifiable
+        ├── save.sav                     ← final savegame
+        └── stats.csv                    ← per-player trajectory over time (only written with --stats)
+```
+
+The folder name encodes the matchup: `<map>` is the map stem, `seed<N>` the RNG seed, and `o0`/`o1` the
+orientation (which AI sat in the first vs. second start slot — the run plays both to cancel seating bias).
+
+Quickest reads: `summary.json` for the run's verdict, a game's `result.json` for who won and the final
+stats, `invocation.json` to reproduce a single game. Everything under `ai-battle-runs/` is git-ignored;
+see [`ai-battle-runs/README.md`](../../ai-battle-runs/README.md) for how all generated run data is laid out.
 
 ## `ai-battle` additions used by the harness
 

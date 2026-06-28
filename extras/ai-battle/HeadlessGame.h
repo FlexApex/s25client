@@ -11,6 +11,7 @@
 #include "gameTypes/TeamTypes.h"
 #include <boost/filesystem.hpp>
 #include <chrono>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -18,20 +19,19 @@
 class GameWorld;
 class GlobalGameSettings;
 class EventManager;
-class Savegame;
 class GameInterface;
 
 /// Run an ai-only game without user-interface.
 class HeadlessGame
 {
 public:
-    /// baselinePlayers: indices of players that should use the ORIGINAL (unimproved) AIJH behaviour.
-    /// All other AIJH players use the improved strategy. Used for A/B testing.
+    /// @param ais       one entry per AI player to add (in seating order).
+    /// @param teams     optional team per AI (same order/length as `ais`; default: all Team::None).
+    /// @param positions optional map start-position (slot) per AI (same order/length as `ais`). Lets the
+    ///                  AIs occupy specific, fixed HQ positions (e.g. {0,2}) instead of the first N; the
+    ///                  other map slots are left empty. Default: 0,1,2,... (the first N positions).
     HeadlessGame(const GlobalGameSettings& ggs, const boost::filesystem::path& map, const std::vector<AI::Info>& ais,
-                 const std::vector<unsigned>& baselinePlayers = {}, const std::vector<Team>& teams = {});
-    /// Continue a saved game: settings, players and world state all come from the .sav file. AI players
-    /// are recreated from each slot's stored aiInfo, so the same AIs resume from the snapshot.
-    explicit HeadlessGame(const boost::filesystem::path& savegamePath);
+                 const std::vector<Team>& teams = {}, const std::vector<unsigned>& positions = {});
     ~HeadlessGame();
 
     void Run(unsigned maxGF = std::numeric_limits<unsigned>::max());
@@ -40,31 +40,33 @@ public:
     void RecordReplay(const boost::filesystem::path& path, unsigned random_init);
     void SaveGame(const boost::filesystem::path& path) const;
 
-    /// Write a CSV row per player every `interval` game frames to `path` (machine-readable trajectory log).
+    /// Write a CSV row per (used) player every `interval` game frames to `path` (machine-readable
+    /// trajectory log). Call before Run().
     void EnableStats(const boost::filesystem::path& path, unsigned interval);
 
-    /// One-shot human-readable dump of every AI player's food chain + mine working-state (diagnostic).
-    /// Prints food-chain building counts/productivity, per-mine idle/food state, and food-ware stocks so
-    /// one can see where a stalled mining economy breaks (no farms? no flour? food not reaching mines?).
-    void AnalyzeEconomy() const;
+    /// Abort the game early once one player dominates: after `minGF`, if a single still-alive player's
+    /// populated-land (Country) statistic is at least `factor` times the best of all the others, the game
+    /// stops (reported with reason "dominance"). factor <= 0 disables. Saves wall-clock on lopsided games.
+    void EnableDominanceAbort(unsigned minGF, double factor);
 
 private:
-    /// Delegated-to by the savegame constructor (loads the file before game_ is built).
-    explicit HeadlessGame(std::unique_ptr<Savegame> save);
-
     void PrintState();
     void WriteStatsHeader();
     void WriteStatsRow();
+    /// Print the final machine-readable RESULT block (parsed by tooling such as tools/ai-eval/eval.py).
+    void PrintResult(const char* reason);
+    /// Whether the dominance-abort condition currently holds.
+    bool DominanceReached() const;
 
     boost::filesystem::path map_;
     Game game_;
     GameWorld& world_;
     EventManager& em_;
+    /// One slot per map player; an entry is null for an empty/unused slot (so indices line up with
+    /// world_.GetPlayer(i)).
     std::vector<std::unique_ptr<AIPlayer>> players_;
-    std::vector<bool> improved_;
-    bool fromSave_ = false;
-    /// No-op GameInterface so world->GetGameInterface() callbacks (e.g. for human player slots in a
-    /// loaded savegame) don't dereference null in this headless, client-less runner.
+    /// No-op GameInterface so the engine's world-callbacks (winner/defeat/cheats) don't dereference null
+    /// in this headless, client-less runner.
     std::unique_ptr<GameInterface> gameInterface_;
 
     Replay replay_;
@@ -74,6 +76,9 @@ private:
     unsigned statsInterval_ = 0;
     unsigned lastStatsGf_ = std::numeric_limits<unsigned>::max();
     FILE* statsFile_ = nullptr;
+
+    unsigned dominanceMinGf_ = 0;
+    double dominanceFactor_ = 0.0;
 
     unsigned lastReportGf_ = 0;
     std::chrono::steady_clock::time_point gameStartTime_;

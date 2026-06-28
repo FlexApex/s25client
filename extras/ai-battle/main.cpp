@@ -5,19 +5,17 @@
 #include "GlobalGameSettings.h"
 #include "HeadlessGame.h"
 #include "QuickStartGame.h"
-#include "addons/const_addons.h"
-#include "gameTypes/TeamTypes.h"
-#include <sstream>
 #include "RTTR_Version.h"
 #include "RttrConfig.h"
+#include "addons/const_addons.h"
 #include "ai/random.h"
 #include "files.h"
 #include "random/Random.h"
 #include "s25util/System.h"
-#include "s25util/strAlgos.h"
+#include "gameData/MaxPlayers.h"
+#include "gameTypes/TeamTypes.h"
 
-#include <cstdlib>
-#include <memory>
+#include <sstream>
 #include <boost/filesystem.hpp>
 #include <boost/nowide/args.hpp>
 #include <boost/nowide/filesystem.hpp>
@@ -35,6 +33,22 @@ namespace bnw = boost::nowide;
 namespace bfs = boost::filesystem;
 namespace po = boost::program_options;
 
+namespace {
+/// Parse a comma-separated list of unsigned ints, e.g. "0,2" -> {0, 2}.
+std::vector<unsigned> parseUnsignedList(const std::string& spec)
+{
+    std::vector<unsigned> out;
+    std::stringstream ss(spec);
+    std::string item;
+    while(std::getline(ss, item, ','))
+    {
+        if(!item.empty())
+            out.push_back(static_cast<unsigned>(std::stoul(item)));
+    }
+    return out;
+}
+} // namespace
+
 int main(int argc, char** argv)
 {
     bnw::nowide_filesystem();
@@ -49,18 +63,20 @@ int main(int argc, char** argv)
     // clang-format off
     desc.add_options()
         ("help,h", "Show help")
-        ("map,m", po::value<std::string>()->required(),"Map (.swd/.wld) or savegame (.sav) to load")
-        ("ai", po::value<std::vector<std::string>>(),"AI player(s) to add (required for maps; ignored for .sav, which carries its own players)")
+        ("map,m", po::value<std::string>()->required(),"Map to load")
+        ("ai", po::value<std::vector<std::string>>()->required(),"AI player(s) to add: aijh|dummy")
         ("objective", po::value<std::string>()->default_value("domination"),"domination(default)|conquer")
         ("replay", po::value(&replay_path),"Filename to write replay to (optional)")
         ("save", po::value(&savegame_path),"Filename to write savegame to (optional)")
         ("stats", po::value<std::string>(),"CSV file to write per-player trajectory stats to (optional)")
-        ("statsInterval", po::value<unsigned>()->default_value(1000),"Game-frame interval between stats rows")
-        ("baseline", po::value<std::vector<unsigned>>()->multitoken(),"Player index(es) using the ORIGINAL (unimproved) AI, for A/B testing")
+        ("statsInterval", po::value<unsigned>()->default_value(2000),"Game-frame interval between stats rows")
+        ("positions", po::value<std::string>(),"Map start positions (slots) for the AIs, e.g. \"0,1\" (default: first N). Must match the --ai count; lets the AIs occupy fixed positions on maps with more slots than players.")
         ("teams", po::value<std::string>(),"Team assignment, e.g. \"0,1;2,3\" for a 2v2 (groups separated by ';', player indices by ',')")
         ("inexhaustibleMines", po::bool_switch(),"Enable INEXHAUSTIBLE_MINES addon (mines never deplete)")
-        ("goldDeposits", po::value<unsigned>(),"CHANGE_GOLD_DEPOSITS selection: 0=none 1=remove 2=iron 3=coal 4=granite")
+        ("goldDeposits", po::value<unsigned>(),"CHANGE_GOLD_DEPOSITS selection: 0=normal 1=remove 2=->iron 3=->coal 4=->granite")
         ("maxRank", po::value<unsigned>(),"MAX_RANK selection: 0=General(4) .. 4=Private(0)")
+        ("minDominanceGF", po::value<unsigned>()->default_value(0),"With --dominanceFactor: only abort early after this many GF (0=disabled)")
+        ("dominanceFactor", po::value<double>()->default_value(0.0),"Abort early once a player's land is this many times the runner-up's (0=disabled)")
         ("random_init", po::value(&random_init),"Seed value for the random number generator (optional)")
         ("random_ai_init", po::value(&random_ai_init),"Seed value for the AI random number generator (optional)")
         ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),"Maximum number of game frames to run (optional)")
@@ -115,92 +131,86 @@ int main(int argc, char** argv)
         AI::getRandomGenerator().seed(random_ai_init);
 
         const bfs::path mapPath = RTTRCONFIG.ExpandPath(options["map"].as<std::string>());
-        const bool isSavegame = s25util::toLower(mapPath.extension().string()) == ".sav";
+        const std::vector<AI::Info> ais = ParseAIOptions(options["ai"].as<std::vector<std::string>>());
 
-        std::unique_ptr<HeadlessGame> game;
-        if(isSavegame)
-        {
-            // Settings, players and world state all come from the save. --ai / addon / team flags
-            // are ignored (the save already encodes them).
-            bnw::cout << "Loading savegame: " << mapPath << std::endl;
-            game = std::make_unique<HeadlessGame>(mapPath);
-        } else
-        {
-            if(!options.count("ai"))
-            {
-                bnw::cerr << "--ai is required when loading a map (only .sav files carry their own players)"
-                          << std::endl;
-                return 1;
-            }
-            const std::vector<AI::Info> ais = ParseAIOptions(options["ai"].as<std::vector<std::string>>());
-
-            GlobalGameSettings ggs;
-            const auto objective = options["objective"].as<std::string>();
-            if(objective == "domination")
-                ggs.objective = GameObjective::TotalDomination;
-            else if(objective == "conquer")
-                ggs.objective = GameObjective::Conquer3_4;
-            else
-            {
-                bnw::cerr << "unknown objective: " << objective << std::endl;
-                return 1;
-            }
-
+        GlobalGameSettings ggs;
+        const auto objective = options["objective"].as<std::string>();
+        if(objective == "domination")
             ggs.objective = GameObjective::TotalDomination;
-
-            // Addon settings (so simulations can match a real game's rules)
-            if(options["inexhaustibleMines"].as<bool>())
-                ggs.setSelection(AddonId::INEXHAUSTIBLE_MINES, 1);
-            if(options.count("goldDeposits"))
-                ggs.setSelection(AddonId::CHANGE_GOLD_DEPOSITS, options["goldDeposits"].as<unsigned>());
-            if(options.count("maxRank"))
-                ggs.setSelection(AddonId::MAX_RANK, options["maxRank"].as<unsigned>());
-
-            std::vector<unsigned> baselinePlayers;
-            if(options.count("baseline"))
-                baselinePlayers = options["baseline"].as<std::vector<unsigned>>();
-
-            // Team assignment, e.g. "0,1;2,3". Player -> Team (Team1, Team2, ...).
-            std::vector<Team> teams;
-            if(options.count("teams"))
-            {
-                const std::string spec = options["teams"].as<std::string>();
-                std::stringstream groups(spec);
-                std::string group;
-                unsigned teamIdx = 0;
-                while(std::getline(groups, group, ';'))
-                {
-                    const Team team = static_cast<Team>(static_cast<uint8_t>(Team::Team1) + teamIdx);
-                    std::stringstream members(group);
-                    std::string idx;
-                    while(std::getline(members, idx, ','))
-                    {
-                        if(idx.empty())
-                            continue;
-                        const unsigned p = static_cast<unsigned>(std::stoul(idx));
-                        if(p >= teams.size())
-                            teams.resize(p + 1, Team::None);
-                        teams[p] = team;
-                    }
-                    ++teamIdx;
-                }
-            }
-
-            game = std::make_unique<HeadlessGame>(ggs, mapPath, ais, baselinePlayers, teams);
+        else if(objective == "conquer")
+            ggs.objective = GameObjective::Conquer3_4;
+        else
+        {
+            bnw::cerr << "unknown objective: " << objective << std::endl;
+            return 1;
         }
 
+        ggs.objective = GameObjective::TotalDomination;
+
+        // Addon settings (so simulations can match a real game's rules, e.g. the common AI-test ruleset:
+        // inexhaustible mines + gold->granite so military strength equals soldier count).
+        if(options["inexhaustibleMines"].as<bool>())
+            ggs.setSelection(AddonId::INEXHAUSTIBLE_MINES, 1);
+        if(options.count("goldDeposits"))
+            ggs.setSelection(AddonId::CHANGE_GOLD_DEPOSITS, options["goldDeposits"].as<unsigned>());
+        if(options.count("maxRank"))
+            ggs.setSelection(AddonId::MAX_RANK, options["maxRank"].as<unsigned>());
+
+        // Fixed start positions (slots) for the AIs.
+        std::vector<unsigned> positions;
+        if(options.count("positions"))
+        {
+            positions = parseUnsignedList(options["positions"].as<std::string>());
+            if(positions.size() != ais.size())
+            {
+                bnw::cerr << "--positions must list exactly one slot per --ai player (" << ais.size() << " expected, "
+                          << positions.size() << " given)" << std::endl;
+                return 1;
+            }
+            for(const unsigned p : positions)
+            {
+                if(p >= MAX_PLAYERS)
+                {
+                    bnw::cerr << "--positions slot " << p << " is out of range (max " << (MAX_PLAYERS - 1) << ")"
+                              << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        // Team assignment, e.g. "0,1;2,3". Player (in --ai order) -> Team (Team1, Team2, ...).
+        std::vector<Team> teams;
+        if(options.count("teams"))
+        {
+            std::stringstream groups(options["teams"].as<std::string>());
+            std::string group;
+            unsigned teamIdx = 0;
+            while(std::getline(groups, group, ';'))
+            {
+                const Team team = static_cast<Team>(static_cast<uint8_t>(Team::Team1) + teamIdx);
+                for(const unsigned p : parseUnsignedList(group))
+                {
+                    if(p >= teams.size())
+                        teams.resize(p + 1, Team::None);
+                    teams[p] = team;
+                }
+                ++teamIdx;
+            }
+        }
+
+        HeadlessGame game(ggs, mapPath, ais, teams, positions);
         if(replay_path)
-            game->RecordReplay(*replay_path, random_init);
+            game.RecordReplay(*replay_path, random_init);
         if(options.count("stats"))
-            game->EnableStats(options["stats"].as<std::string>(), options["statsInterval"].as<unsigned>());
+            game.EnableStats(options["stats"].as<std::string>(), options["statsInterval"].as<unsigned>());
+        if(options["dominanceFactor"].as<double>() > 0.0)
+            game.EnableDominanceAbort(options["minDominanceGF"].as<unsigned>(),
+                                      options["dominanceFactor"].as<double>());
 
-        if(std::getenv("RTTR_ANALYZE")) // one-shot food/mine economy dump of the loaded (or freshly built) state
-            game->AnalyzeEconomy();
-
-        game->Run(options["maxGF"].as<unsigned>());
-        game->Close();
+        game.Run(options["maxGF"].as<unsigned>());
+        game.Close();
         if(savegame_path)
-            game->SaveGame(*savegame_path);
+            game.SaveGame(*savegame_path);
     } catch(const std::exception& e)
     {
         bnw::cerr << e.what() << std::endl;

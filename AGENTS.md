@@ -18,6 +18,18 @@ The essentials to follow:
 - **Tests:** add/extend tests for each fix or feature; keep them small and descriptive; account for RNG variability.
 - **Avoid** unnecessary `else` after `return`, and duplicated code (factor it out).
 
+## AI testing (ai-battle / LLM AI)
+
+When evaluating an AI's competitiveness, test on these maps (all under the same ruleset below):
+
+- **FL-Macro2.SWD**
+- **Macro144.SWD**
+- **AtomicFL.SWD**
+
+Across **multiple seeds and both map orientations**, under: **2v2, Hard, inexhaustible mines,
+gold→granite** (no gold deposits, so military strength = soldier count). The bar is to stay
+competitive with **AIJH-Hard** with **no plateau** over long (~4h, ~288k GF) games.
+
 ## Submodules
 
 `external/s25edit` (the map editor) is a **separate repository with its own older style** — e.g. PascalCase methods and members without the trailing `_`. There, **match the surrounding file's style** rather than the rules above. It ships no `.clang-format` of its own and uses this repo's config when built in-tree, so `make clangFormat` still applies.

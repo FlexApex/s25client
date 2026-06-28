@@ -24,3 +24,4 @@
 /data/RTTR/languages/*.mo
 /extras/ai-battle/__pycache__
 /doc/ai-dev-savegames-and-replays/
+/aitest-data

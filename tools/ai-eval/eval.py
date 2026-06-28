@@ -212,7 +212,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--timeout", type=int, default=3600, help="per-game wall-clock timeout (s)")
     ap.add_argument("--bin", default=str(DEFAULT_BIN))
-    ap.add_argument("--out-dir", default=None, help="logs/summary dir (default: tools/ai-eval/results/<ts>)")
+    ap.add_argument("--out-dir", default=None, help="logs/summary dir (default: ai-battle-runs/eval/<run-id>)")
     ap.add_argument("--stats", action="store_true", help="also write per-game trajectory CSVs")
     ap.add_argument("--stats-interval", type=int, default=4000)
     ap.add_argument("--label", default="", help="optional label folded into the output dir name")
@@ -228,7 +228,7 @@ def main():
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     name = f"{ts}_{args.challenger}_vs_{args.baseline}" + (f"_{args.label}" if args.label else "")
-    out_dir = Path(args.out_dir) if args.out_dir else (Path(__file__).resolve().parent / "results" / name)
+    out_dir = Path(args.out_dir) if args.out_dir else (REPO_ROOT / "ai-battle-runs" / "eval" / name)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     jobs = [(m, s, o) for m in args.maps for s in args.seeds for o in (0, 1)]

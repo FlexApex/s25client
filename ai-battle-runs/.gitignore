@@ -1,0 +1,5 @@
+# All generated ai-battle / ai-eval output lives here. Ignore the generated content,
+# but keep this folder and its README tracked so the layout stays documented.
+*
+!.gitignore
+!README.md

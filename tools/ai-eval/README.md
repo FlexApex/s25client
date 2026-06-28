@@ -15,7 +15,13 @@ tools/ai-eval/eval.py
 
 # evaluate your AI against AIJH over 8 seeds (48 games)
 tools/ai-eval/eval.py --challenger myai --baseline aijh --num-seeds 8
+
+# run a single ad-hoc game, collecting log + stats + replay + savegame in one folder
+tools/ai-eval/run-game.sh --map share/s25rttr/RTTR/MAPS/NEW/dreamland.swd --ai aijh --ai aijh --maxGF 200000
 ```
+
+All generated output (eval runs and single games) lands under **`ai-battle-runs/`** at the repo root
+(git-ignored); see [`ai-battle-runs/README.md`](../../ai-battle-runs/README.md) for the layout.
 
 ## How it scores fairly
 
@@ -63,7 +69,8 @@ populated land reaches `--dominance-factor`× the other's (default 3×, after 60
 | `--stats` | off | also write per-game trajectory CSVs |
 
 Output: a per-map and overall W/L/D table with the 95% CI and a `PASS`/`FAIL`/`INCONCLUSIVE` verdict,
-plus per-game logs and a `summary.json` under `tools/ai-eval/results/<timestamp>_<challenger>_vs_<baseline>/`.
+plus per-game logs and a `summary.json` under `ai-battle-runs/eval/<timestamp>_<challenger>_vs_<baseline>/`
+(see `ai-battle-runs/README.md` for the full layout of generated run data).
 
 ## `ai-battle` additions used by the harness
 

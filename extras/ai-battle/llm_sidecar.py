@@ -124,10 +124,14 @@ def _lookup(env, names):
 
 
 def resolve(env, kind, tier):
-    """Resolve url/key/model for a tier: tier-specific alias first, then generic LLM_* fallback."""
+    """Resolve url/key/model for a tier: tier-specific alias first, then generic LLM_* fallback.
+    Tier aliases are the generic LLM_* names with the LLM_ prefix swapped for the tier prefix
+    (LLM_APIKEY -> LLM_CHEAP_APIKEY, LLM_URL -> LLM_CHEAP_URL, ...), so the KEY suffix matches the
+    generic convention (APIKEY) instead of the wrong "KEY" that kind.upper() produced."""
     prefix = TIER_PREFIX.get(tier)
     if prefix:
-        val, name = _lookup(env, [prefix + kind.upper()])
+        tier_names = [prefix + n[len("LLM_"):] for n in GENERIC[kind] if n.startswith("LLM_")]
+        val, name = _lookup(env, tier_names)
         if val:
             return val, name
     return _lookup(env, GENERIC[kind])
@@ -336,6 +340,11 @@ def call_llm(cfg, messages):
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", "Bearer " + cfg["key"])
+    # Some endpoints sit behind Cloudflare, which bans the default Python-urllib UA by client
+    # signature (HTTP 403, "error code: 1010"). Present a normal browser UA so the call gets through.
+    req.add_header("User-Agent",
+                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0.0.0 Safari/537.36")
     with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data["choices"][0]["message"]["content"]
@@ -824,6 +833,26 @@ def serve(cfgs, expensive, spool, once, poll, stub):
         time.sleep(poll)
 
 
+def resolve_cfg(env, tier, overrides, require_key=False):
+    """build_cfg for a tier, then apply CLI --<tier>-url/--<tier>-model overrides. Shared by the
+    serving and --selftest paths so a preflight selftest probes the SAME endpoint the games will use
+    (without this, --selftest ignored the CLI overrides and tested only .env)."""
+    url_o, model_o = overrides.get(tier, (None, None))
+    cfg = build_cfg(env, tier, require_key=require_key)
+    if cfg:
+        if url_o:
+            cfg["url"], cfg["url_from"] = url_o, "--cli"
+        if model_o:
+            cfg["model"], cfg["model_from"] = model_o, "--cli"
+        return cfg
+    if url_o and model_o:  # tier absent from .env but fully specified on the CLI (e.g. keyless Ollama)
+        d = TIER_DEFAULTS[tier]
+        return {"tier": tier, "url": url_o, "key": "", "model": model_o, "url_from": "--cli",
+                "key_from": "-", "model_from": "--cli", "temperature": d["temperature"],
+                "max_tokens": d["max_tokens"], "timeout": d["timeout"]}
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="LLM sidecar for the RttR llm AI")
     ap.add_argument("--spool", default=os.environ.get("RTTR_LLM_SPOOL", "/tmp/rttr_llm"))
@@ -852,7 +881,7 @@ def main():
         any_cfg = False
         any_ok = False
         for t in TIERS:
-            cfg = build_cfg(env, t, require_key=False)
+            cfg = resolve_cfg(env, t, _overrides, require_key=False)
             if cfg is None:
                 print(f"  {t:<9}: not configured")
                 continue
@@ -880,22 +909,10 @@ def main():
         cfgs = {}
     else:
         env = load_env_files()
-        cfgs = {t: build_cfg(env, t) for t in TIERS}
+        # CLI overrides (point a tier at a model/endpoint without editing .env, e.g. a keyless local
+        # Ollama: --cheap-url http://host:11434/v1 --cheap-model qwen2.5:7b-instruct-q4_K_M).
+        cfgs = {t: resolve_cfg(env, t, _overrides) for t in TIERS}
         cfgs = {t: c for t, c in cfgs.items() if c}
-        # Apply CLI overrides (override an existing tier's url/model, or build a minimal cfg from CLI -
-        # e.g. a keyless local Ollama: --cheap-url http://host:11434/v1 --cheap-model qwen2.5:7b-instruct-q4_K_M).
-        for t in TIERS:
-            url_o, model_o = _overrides[t]
-            if cfgs.get(t):
-                if url_o:
-                    cfgs[t]["url"], cfgs[t]["url_from"] = url_o, "--cli"
-                if model_o:
-                    cfgs[t]["model"], cfgs[t]["model_from"] = model_o, "--cli"
-            elif url_o and model_o:
-                d = TIER_DEFAULTS[t]
-                cfgs[t] = {"tier": t, "url": url_o, "key": "", "model": model_o, "url_from": "--cli",
-                           "key_from": "-", "model_from": "--cli", "temperature": d["temperature"],
-                           "max_tokens": d["max_tokens"], "timeout": d["timeout"]}
         for t in TIERS:
             c = cfgs.get(t)
             if c:

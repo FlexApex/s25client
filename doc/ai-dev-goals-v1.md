@@ -26,10 +26,27 @@ challenge across long games and entirely its own player.
   "boxed in", "being out-expanded", "under pressure on one front") and take concrete corrective action.
 
 ### Execution & building placement
-- **Human-like, structured execution**: organized, sensible building placement and road / territory
-  layout — no haphazard or self-conflicting placements (e.g. farms crammed among foresters).
-- Placement should express real **spatial intent** (districts, frontiers, supply lines), not greedy
-  local guesses.
+Two overarching goals govern how the AI builds:
+
+1. **Smart, whole-territory- and strategy-aware placement.** Every building is sited with the entire
+   territory and the current strategy in mind — organized, human-like execution that expresses real
+   **spatial intent** (districts, frontiers, supply lines), never haphazard, self-conflicting, or a
+   greedy local guess. Concrete examples of what this looks like (these are *examples* of the goal,
+   not the goal itself):
+   - *Forester groves with room* — foresters where trees can actually grow (enough plantspace) and
+     spaced from one another, with woodcutters clustered tightly around each forester; never a lone
+     woodcutter in bare grass, never a forester divorced from its cutters, never farms crammed among
+     foresters.
+   - *Roomy farm belts* — farms keep clear space (no self-overlap, no starving) and stay out of the
+     groves; the food belt forms its own zone.
+   - *Grid-like ways* — prefer straight, lattice-aligned roads and building rows where terrain
+     permits, over shortest-but-winding paths; a town that reads as deliberately laid out.
+2. **Think ahead before clumping.** When the intended layout needs space the current territory can't
+   give yet and expansion is imminent, *wait* for the new land rather than cramming buildings into a
+   clump.
+
+See [ai-placement-strategy-v1.md](ai-placement-strategy-v1.md) for the LLM-driven method intended to
+realize these goals within the existing LLM call budget.
 
 ### Competitiveness — the definition of done
 - Evaluated **against AIJH** and able to **compete at the Hard level**.

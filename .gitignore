@@ -22,3 +22,6 @@
 /external/boost*
 /win32/*.aps
 /data/RTTR/languages/*.mo
+/extras/ai-battle/__pycache__
+/doc/ai-dev-savegames-and-replays/
+/aitest-data

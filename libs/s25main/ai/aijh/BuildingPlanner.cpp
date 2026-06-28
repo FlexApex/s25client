@@ -356,89 +356,10 @@ void BuildingPlanner::UpdateBuildingsWanted(const AIPlayerJH& aijh)
           numMilitaryBlds <= 5 || inventory.goods[GoodType::Stones] < 50 ?
             0 :
             std::min((inventory.goods[GoodType::Stones] - 50) / 4, GetNumBuildings(BuildingType::Catapult) + 4);
-
-        // === Improved strategy: lift the self-imposed economic ceiling ===
-        // The baseline AI plateaus (and then shrinks) its economy while sitting on large idle
-        // stockpiles of boards/stones and a big unused pool of carriers: its build wants are capped
-        // by small constants and by the (often plateauing) military-building count. For the improved
-        // AI we scale the production chain with the actual economy so it keeps converting those idle
-        // resources into a bigger economy and a growing army. UpdateBuildingsWanted runs every 100 GF
-        // and the dependent buildings (wells/mills/bakeries/breweries) are derived from *actual*
-        // building counts, so raising these primary drivers converges safely over the next ticks.
-        if(aijh.IsImproved())
-            ApplyImprovedScaling(aijh, numMilitaryBlds, foodusers);
     }
     if(aijh.ggs.GetMaxMilitaryRank() == 0)
     {
         buildingsWanted[BuildingType::GoldMine] = 0; // max rank is 0 = private / recruit ==> gold is useless!
-    }
-}
-
-void BuildingPlanner::ApplyImprovedScaling(const AIPlayerJH& aijh, const unsigned numMilitaryBlds,
-                                           const unsigned foodusers)
-{
-    const Inventory& inventory = aijh.player.GetInventory();
-
-    // Only intensify the economy when we are a MATURE base sitting on a LARGE idle stockpile of
-    // building materials - i.e. territorial expansion has effectively saturated and the surplus
-    // would otherwise just pile up unused (the measured baseline failure mode: ~45 mil buildings,
-    // ~2800 idle boards, declining productivity). Testing showed that triggering any earlier diverts
-    // resources away from (far more valuable) territorial expansion and makes the AI markedly weaker.
-    // With this strict gate the improved AI is byte-for-byte the baseline until it is genuinely
-    // boxed-in/saturated, and only then converts the idle surplus into more economy and army.
-    // (Tested relaxing this gate for INEXHAUSTIBLE_MINES so it would ramp the permanent mine chain
-    // earlier - it measured as a net negative: ramping before expansion saturates diverts boards/
-    // stones/workers away from territory and yields fewer buildings AND soldiers. Kept strict.)
-    if(numMilitaryBlds < 25 || inventory.goods[GoodType::Boards] < 200 || inventory.goods[GoodType::Stones] < 120)
-        return;
-
-    // Actual food-production buildings currently standing (gates how many mines can be fed).
-    const unsigned numFoodProducers =
-      GetNumBuildings(BuildingType::Bakery) + GetNumBuildings(BuildingType::Slaughterhouse)
-      + GetNumBuildings(BuildingType::Hunter) + GetNumBuildings(BuildingType::Fishery);
-    const auto raise = [&](BuildingType bld, unsigned to) {
-        buildingsWanted[bld] = std::max(buildingsWanted[bld], to);
-    };
-
-    // Keystone: more toolmakers so tool supply (hence new specialist workers) scales with the empire.
-    // The baseline hard-caps Metalworks at 1, throttling how fast the large idle carrier pool can be
-    // turned into miners/farmers/smiths for an expanding economy.
-    const unsigned numSmelters = GetNumBuildings(BuildingType::Ironsmelter);
-    if(numSmelters > 0)
-        raise(BuildingType::Metalworks, std::min<unsigned>(1 + numSmelters / 3, 3));
-
-    // Grow farms ahead of their consumers so they can feed more mines (food gates mining).
-    // Still limited by available scythes+farmers (tools/workers), so this only creates demand.
-    raise(BuildingType::Farm, std::min<unsigned>(inventory.goods[GoodType::Scythe] + inventory.people[Job::Farmer],
-                                                 foodusers + 3 + numMilitaryBlds / 4));
-
-    // Scale the iron/coal/gold chain with food + smelters so weapon (and tool) output keeps rising
-    // -> the army keeps growing instead of capping at a fixed size. Each mine still needs a
-    // pickaxe+miner and is bounded by the food producers that can sustain it.
-    const unsigned numFarms = GetNumBuildings(BuildingType::Farm);
-    if(numFarms >= 4 && numFoodProducers >= 3)
-    {
-        const unsigned wantIron =
-          std::min<unsigned>({numFarms * 2 / 3 + 1, numSmelters + 2, std::max(numFoodProducers, 2u)});
-        raise(BuildingType::IronMine, wantIron);
-
-        raise(BuildingType::Ironsmelter, std::min<unsigned>(inventory.goods[GoodType::Crucible]
-                                                              + inventory.people[Job::IronFounder],
-                                                            GetNumBuildings(BuildingType::IronMine)));
-
-        const unsigned smelters = GetNumBuildings(BuildingType::Ironsmelter);
-        const unsigned toolmakers = buildingsWanted[BuildingType::Metalworks];
-        unsigned wantArmory = smelters > toolmakers ? smelters - toolmakers : 0u;
-        if(aijh.ggs.isEnabled(AddonId::HALF_COST_MIL_EQUIP))
-            wantArmory *= 2;
-        raise(BuildingType::Armory, wantArmory);
-
-        raise(BuildingType::CoalMine,
-              std::min<unsigned>(GetNumBuildings(BuildingType::IronMine) * 2 + GetNumBuildings(BuildingType::GoldMine),
-                                 numFarms + numFoodProducers));
-
-        if(aijh.ggs.GetMaxMilitaryRank() > 0)
-            raise(BuildingType::GoldMine, std::min<unsigned>(smelters / 2 + 1, 5));
     }
 }
 

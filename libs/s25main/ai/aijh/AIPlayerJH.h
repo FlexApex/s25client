@@ -32,23 +32,21 @@ class AIJob;
 Subscription recordBQsToUpdate(const GameWorldBase& gw, std::vector<MapPoint>& bqsToUpdate);
 
 /// Klasse für die besser JH-KI
-class AIPlayerJH final : public AIPlayer
+class AIPlayerJH : public AIPlayer
 {
 public:
-    AIPlayerJH(unsigned char playerId, const GameWorldBase& gwb, AI::Level level, bool useImproved = true);
+    AIPlayerJH(unsigned char playerId, const GameWorldBase& gwb, AI::Level level);
     ~AIPlayerJH() override;
 
     AIInterface& GetInterface() { return aii; }
     const AIInterface& GetInterface() const { return aii; }
     const GameWorldBase& GetWorld() const { return gwb; }
-    /// Whether the improved economy/military strategy is active (vs. the original baseline behaviour).
-    /// Used to gate all AI improvements so the original behaviour can be reproduced for A/B testing.
-    bool IsImproved() const { return useImproved_; }
     /// Number of attacks this AI has launched (diagnostic, used to measure early aggression).
     unsigned GetNumAttacksLaunched() const { return numAttacksLaunched_; }
     // Required by the AIJobs:
     AIConstruction& GetConstruction() { return *construction; }
     const BuildingPlanner& GetBldPlanner() const { return *bldPlanner; }
+    BuildingPlanner& GetBldPlanner() { return *bldPlanner; }
     const AIJob* GetCurrentJob() const { return currentJob.get(); }
     unsigned GetNumJobs() const;
 
@@ -220,7 +218,17 @@ public:
 
     MapPoint UpgradeBldPos;
 
+protected:
+    /// Hook for subclasses to refine the planner's building wants after they are computed (base: no-op).
+    virtual void RefineBuildingsWanted() {}
+    /// Frames between outgoing attacks (base: the configured interval; subclasses may stretch it early).
+    virtual unsigned GetEffectiveAttackInterval() const { return attack_interval; }
+    /// Recruiting ratio 0..10 used in the military settings (base: 10 = full; subclasses may ramp it).
+    virtual unsigned GetRecruitingRatio() const { return 10; }
+
 private:
+    /// Recompute the planner's building wants, then apply any subclass refinements (RefineBuildingsWanted).
+    void RefreshBuildingsWanted();
     /// The current job the AI is working on
     std::unique_ptr<AIJob> currentJob;
     /// List of coordinates at which military buildings should be
@@ -237,8 +245,6 @@ private:
     int isInitGfCompleted;
     /// resigned yes/no
     bool defeated;
-    /// Use improved economy/military strategy (default) or original baseline behaviour (for A/B testing)
-    bool useImproved_;
     /// Count of attacks launched (diagnostic for measuring early aggression)
     unsigned numAttacksLaunched_ = 0;
     AIEventManager eventManager;

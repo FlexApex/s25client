@@ -33,6 +33,9 @@ public:
 
     /// Return the number of buildings that we want to build of the current type
     int GetNumAdditionalBuildingsWanted(BuildingType type) const;
+    /// How many buildings of a type are currently wanted (read/write; used by subclassed AIs to refine plans)
+    unsigned GetBuildingsWanted(BuildingType type) const { return buildingsWanted[type]; }
+    void SetBuildingsWanted(BuildingType type, unsigned count) { buildingsWanted[type] = count; }
     /// Checks whether the ai wants to construct more mil buildings atm
     bool WantMoreMilitaryBlds(const AIPlayerJH& aijh) const;
     bool IsExpansionRequired() const { return expansionRequired; }
@@ -46,8 +49,5 @@ private:
 
     void RefreshBuildingNums(const AIPlayerJH& aijh);
     bool CalcIsExpansionRequired(AIPlayerJH& aijh, bool recalc) const;
-    /// Improved strategy only: scale the production chain with the actual economy so the AI keeps
-    /// growing instead of plateauing at small hardcoded ceilings. Only ever raises wants.
-    void ApplyImprovedScaling(const AIPlayerJH& aijh, unsigned numMilitaryBlds, unsigned foodusers);
 };
 } // namespace AIJH

@@ -4,13 +4,21 @@
 
 #include "HeadlessGame.h"
 #include "BuildingRegister.h"
+#include "Cheats.h"
+#include "addons/const_addons.h"
 #include "EventManager.h"
+#include "GameCommand.h"
+#include "GameInterface.h"
 #include "GamePlayer.h"
 #include "GlobalGameSettings.h"
+#include "ILocalGameState.h"
 #include "PlayerInfo.h"
 #include "Savegame.h"
+#include "SerializedGameData.h"
+#include "factories/GameCommandFactory.h"
 #include "ai/aijh/AIPlayerJH.h"
 #include "ai/llm/AIPlayerLlm.h"
+#include "buildings/nobUsual.h"
 #include "factories/AIFactory.h"
 #include "network/PlayerGameCommands.h"
 #include "world/GameWorld.h"
@@ -33,6 +41,34 @@
 std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, const std::vector<Team>& teams);
 std::string ToString(const std::chrono::milliseconds& time);
 std::string HumanReadableNumber(unsigned num);
+
+namespace {
+/// Swallows any game command the engine itself issues (cheats etc.) - none are needed headless.
+struct NoopGcFactory : GameCommandFactory
+{
+    bool AddGC(gc::GameCommandPtr /*gc*/) override { return false; }
+};
+/// No-op GameInterface: the engine's world-callbacks (minimap, road-build UI, winner, cheats) are
+/// client/UI concerns that don't affect the simulation, so headless can safely ignore them. Having a
+/// non-null interface avoids the null-deref crash when a savegame's human-player slot triggers one.
+struct HeadlessGameInterface : GameInterface
+{
+    explicit HeadlessGameInterface(GameWorldBase& world) : cheats_(world, gcf_) {}
+    void GI_PlayerDefeated(unsigned) override {}
+    void GI_UpdateMinimap(MapPoint) override {}
+    void GI_FlagDestroyed(MapPoint) override {}
+    void GI_TreatyOfAllianceChanged(unsigned) override {}
+    void GI_Winner(unsigned) override {}
+    void GI_TeamWinner(unsigned) override {}
+    void GI_StartRoadBuilding(MapPoint, bool) override {}
+    void GI_CancelRoadBuilding() override {}
+    void GI_BuildRoad() override {}
+    Cheats& GI_GetCheats() override { return cheats_; }
+
+    NoopGcFactory gcf_;
+    Cheats cheats_;
+};
+} // namespace
 
 namespace bfs = boost::filesystem;
 namespace bnw = boost::nowide;
@@ -63,16 +99,78 @@ HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, 
     improved_.clear();
     for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
     {
-        const AI::Info& aiInfo = world_.GetPlayer(playerId).aiInfo;
-        const bool useImproved = !helpers::contains(baselinePlayers, playerId);
-        improved_.push_back(useImproved && aiInfo.type == AI::Type::Default);
-        if(aiInfo.type == AI::Type::Default)
-            players_.push_back(std::make_unique<AIJH::AIPlayerJH>(playerId, world_, aiInfo.level, useImproved));
-        else
-            players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
+        AI::Info aiInfo = world_.GetPlayer(playerId).aiInfo;
+        // --baseline forces an ApexAI slot back to the original AIJH, so the improved (ApexAI) and the
+        // baseline (AIJH) strategies can be A/B-compared in the same game.
+        if(helpers::contains(baselinePlayers, playerId) && aiInfo.type == AI::Type::ApexAI)
+            aiInfo.type = AI::Type::Default;
+        improved_.push_back(aiInfo.type == AI::Type::ApexAI);
+        players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
     }
 
     world_.InitAfterLoad();
+    gameInterface_ = std::make_unique<HeadlessGameInterface>(world_);
+    world_.SetGameInterface(gameInterface_.get());
+}
+
+namespace {
+/// Minimal ILocalGameState for restoring a snapshot outside the real client.
+struct HeadlessLocalState : ILocalGameState
+{
+    unsigned GetPlayerId() const override { return 0; }
+    bool IsHost() const override { return true; }
+    std::string FormatGFTime(unsigned numGFs) const override { return std::to_string(numGFs); }
+    void SystemChat(const std::string&) override {}
+};
+
+std::unique_ptr<Savegame> loadSavegameOrThrow(const bfs::path& path)
+{
+    auto save = std::make_unique<Savegame>();
+    if(!save->Load(path, SaveGameDataToLoad::All))
+        throw std::runtime_error("Could not load savegame " + path.string());
+    // The engine's "auto-demolish a building that ran out of resources" feature calls into the
+    // hosting GameClient (nobUsual::OnOutOfResources -> GAMECLIENT.DestroyBuilding). There is no
+    // hosting client in this headless runner, so disable that client-coupled QoL addon for the
+    // continuation - it doesn't affect the economy/AI behaviour we run a save forward to observe.
+    save->ggs.setSelection(AddonId::DEMOLISH_BLD_WO_RES, 0);
+    return save;
+}
+
+std::vector<PlayerInfo> playersFromSave(Savegame& save)
+{
+    std::vector<PlayerInfo> players;
+    for(unsigned i = 0; i < save.GetNumPlayers(); ++i)
+        players.emplace_back(save.GetPlayer(i));
+    return players;
+}
+} // namespace
+
+HeadlessGame::HeadlessGame(const bfs::path& savegamePath) : HeadlessGame(loadSavegameOrThrow(savegamePath)) {}
+
+HeadlessGame::HeadlessGame(std::unique_ptr<Savegame> save)
+    : game_(save->ggs, save->start_gf, playersFromSave(*save)), world_(game_.world_),
+      em_(*static_cast<EventManager*>(game_.em_.get())), fromSave_(true)
+{
+    HeadlessLocalState local;
+    save->sgd.ReadSnapshot(game_, local); // restores the full world + player economies from the snapshot
+
+    gameInterface_ = std::make_unique<HeadlessGameInterface>(world_);
+    world_.SetGameInterface(gameInterface_.get());
+
+    players_.clear();
+    improved_.clear();
+    for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
+    {
+        const AI::Info& aiInfo = world_.GetPlayer(playerId).aiInfo;
+        improved_.push_back(aiInfo.type == AI::Type::ApexAI);
+        players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
+        const GamePlayer& pl = world_.GetPlayer(playerId);
+        const MapPoint hq = pl.GetHQPos();
+        bnw::cout << "  player " << playerId << ": '" << pl.name << "' aiType=" << static_cast<unsigned>(aiInfo.type)
+                  << " nation=" << static_cast<unsigned>(pl.nation) << " team=" << static_cast<unsigned>(pl.team)
+                  << " HQ=(" << hq.x << "," << hq.y << ")" << (pl.IsDefeated() ? " [defeated]" : "") << '\n';
+    }
+    // No InitAfterLoad(): the snapshot is already a fully-initialised, post-load world.
 }
 
 void HeadlessGame::EnableStats(const bfs::path& path, unsigned interval)
@@ -84,6 +182,9 @@ void HeadlessGame::EnableStats(const bfs::path& path, unsigned interval)
 HeadlessGame::~HeadlessGame()
 {
     Close();
+    // world_ holds a raw pointer to gameInterface_, which is destroyed before game_/world_; clear it
+    // so nothing dereferences a freed interface during teardown.
+    world_.SetGameInterface(nullptr);
 }
 
 void HeadlessGame::Run(unsigned maxGF)
@@ -92,7 +193,7 @@ void HeadlessGame::Run(unsigned maxGF)
     gameStartTime_ = std::chrono::steady_clock::now();
     auto nextReport = gameStartTime_ + std::chrono::seconds(1);
 
-    game_.Start(false);
+    game_.Start(fromSave_);
 
     if(statsInterval_ > 0)
     {
@@ -163,7 +264,7 @@ void HeadlessGame::WriteStatsHeader()
                  "gf,player,name,improved,defeated,country,buildings,inhabitants,merchandise,military,gold,"
                  "productivity,vanquished,milblds,storehouses,soldiers,generals,helpers,boards,stones,coins,"
                  "swords,shields,beer,sawmills,foresters,farms,ironmines,coalmines,goldmines,smelters,armories,"
-                 "metalworks,mints,catapults,attacks\n");
+                 "metalworks,mints,catapults,attacks,quarries,granitemines,sites\n");
 }
 
 void HeadlessGame::WriteStatsRow()
@@ -185,7 +286,7 @@ void HeadlessGame::WriteStatsRow()
         const unsigned attacks = jh ? jh->GetNumAttacksLaunched() : (llm ? llm->GetNumAttacksLaunched() : 0u);
         std::fprintf(statsFile_,
                      "%u,%u,%s,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%zu,%zu,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
-                     "%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%u\n",
+                     "%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%u,%zu,%zu,%zu\n",
                      gf, p, pl.name.c_str(), improved_[p] ? 1 : 0, pl.IsDefeated() ? 1 : 0,
                      pl.GetStatisticCurrentValue(StatisticType::Country),
                      pl.GetStatisticCurrentValue(StatisticType::Buildings),
@@ -202,9 +303,87 @@ void HeadlessGame::WriteStatsRow()
                      inv.goods[GoodType::Beer], nb(BuildingType::Sawmill), nb(BuildingType::Forester),
                      nb(BuildingType::Farm), nb(BuildingType::IronMine), nb(BuildingType::CoalMine),
                      nb(BuildingType::GoldMine), nb(BuildingType::Ironsmelter), nb(BuildingType::Armory),
-                     nb(BuildingType::Metalworks), nb(BuildingType::Mint), nb(BuildingType::Catapult), attacks);
+                     nb(BuildingType::Metalworks), nb(BuildingType::Mint), nb(BuildingType::Catapult), attacks,
+                     nb(BuildingType::Quarry), nb(BuildingType::GraniteMine),
+                     pl.GetBuildingRegister().GetBuildingSites().size());
     }
     std::fflush(statsFile_);
+}
+
+void HeadlessGame::AnalyzeEconomy() const
+{
+    // Per-building-type roll-up: count, how many are idle (productivity 0), average productivity,
+    // and (for consumers like mines) how much input food they currently hold.
+    const auto roll = [&](const GamePlayer& pl, BuildingType bt) {
+        const auto& blds = pl.GetBuildingRegister().GetBuildings(bt);
+        unsigned n = 0, idle = 0, noWorker = 0, prodSum = 0, foodOnHand = 0;
+        for(const nobUsual* b : blds)
+        {
+            ++n;
+            const unsigned p = b->GetProductivity();
+            prodSum += p;
+            if(p == 0)
+                ++idle;
+            if(!b->HasWorker())
+                ++noWorker;
+            foodOnHand += b->GetNumWares(0) + b->GetNumWares(1) + b->GetNumWares(2);
+        }
+        return std::array<unsigned, 5>{n, idle, noWorker, n ? prodSum / n : 0, foodOnHand};
+    };
+    const auto line = [&](const GamePlayer& pl, const char* label, BuildingType bt, bool showFood) {
+        const auto r = roll(pl, bt);
+        if(r[0] == 0)
+            return;
+        bnw::cout << "    " << label << ": " << r[0] << "  idle=" << r[1] << " noWorker=" << r[2]
+                  << " avgProd=" << r[3];
+        if(showFood)
+            bnw::cout << " foodOnHand=" << r[4];
+        bnw::cout << '\n';
+    };
+
+    bnw::cout << "\n==================== ECONOMY ANALYSIS (loaded state, GF=" << em_.GetCurrentGF()
+              << ") ====================\n";
+    for(unsigned p = 0; p < world_.GetNumPlayers(); ++p)
+    {
+        const GamePlayer& pl = world_.GetPlayer(p);
+        const AI::Info& aiInfo = pl.aiInfo;
+        if(aiInfo.type != AI::Type::Default && aiInfo.type != AI::Type::ApexAI && aiInfo.type != AI::Type::Llm)
+            continue; // skip humans / dummies
+        const Inventory& inv = pl.GetInventory();
+        const MapPoint hq = pl.GetHQPos();
+        bnw::cout << "\n-- player " << p << " '" << pl.name << "' aiType=" << static_cast<unsigned>(aiInfo.type)
+                  << " HQ=(" << hq.x << "," << hq.y << ")" << (pl.IsDefeated() ? " [defeated]" : "") << " --\n";
+
+        bnw::cout << "  FOOD PRODUCTION:\n";
+        line(pl, "Farm        ", BuildingType::Farm, false);
+        line(pl, "Mill        ", BuildingType::Mill, false);
+        line(pl, "Bakery      ", BuildingType::Bakery, false);
+        line(pl, "PigFarm     ", BuildingType::PigFarm, false);
+        line(pl, "Slaughterhse", BuildingType::Slaughterhouse, false);
+        line(pl, "Fishery     ", BuildingType::Fishery, false);
+        line(pl, "Hunter      ", BuildingType::Hunter, false);
+        line(pl, "Well        ", BuildingType::Well, false);
+        line(pl, "Brewery     ", BuildingType::Brewery, false);
+        line(pl, "DonkeyBreedr", BuildingType::DonkeyBreeder, false);
+        line(pl, "Charburner  ", BuildingType::Charburner, false);
+
+        bnw::cout << "  MINES (consume food):\n";
+        line(pl, "CoalMine    ", BuildingType::CoalMine, true);
+        line(pl, "IronMine    ", BuildingType::IronMine, true);
+        line(pl, "GoldMine    ", BuildingType::GoldMine, true);
+        line(pl, "GraniteMine ", BuildingType::GraniteMine, true);
+
+        bnw::cout << "  WARE STOCKS:  grain=" << inv.goods[GoodType::Grain] << " flour=" << inv.goods[GoodType::Flour]
+                  << " bread=" << inv.goods[GoodType::Bread] << " meat=" << inv.goods[GoodType::Meat]
+                  << " ham=" << inv.goods[GoodType::Ham] << " fish=" << inv.goods[GoodType::Fish]
+                  << " water=" << inv.goods[GoodType::Water] << " beer=" << inv.goods[GoodType::Beer] << '\n';
+        bnw::cout << "  WORKERS/TOOLS: farmer=" << inv.people[Job::Farmer] << " scythe=" << inv.goods[GoodType::Scythe]
+                  << " | miner=" << inv.people[Job::Miner] << " pickaxe=" << inv.goods[GoodType::PickAxe]
+                  << " | baker=" << inv.people[Job::Baker] << " butcher=" << inv.people[Job::Butcher]
+                  << " miller=" << inv.people[Job::Miller] << " fisher=" << inv.people[Job::Fisher]
+                  << " helpers=" << inv.people[Job::Helper] << '\n';
+    }
+    bnw::cout << "\n=================================================================================\n\n";
 }
 
 void HeadlessGame::Close()
@@ -321,6 +500,7 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais, con
         switch(ai.type)
         {
             case AI::Type::Default: pi.name = "AIJH " + std::to_string(ret.size()); break;
+            case AI::Type::ApexAI: pi.name = "ApexAI " + std::to_string(ret.size()); break;
             case AI::Type::Llm: pi.name = "LLM " + std::to_string(ret.size()); break;
             case AI::Type::Dummy:
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;

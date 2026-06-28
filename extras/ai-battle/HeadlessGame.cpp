@@ -97,6 +97,13 @@ HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, 
         throw std::runtime_error("Could not load " + map.string());
     MapLoader::SetupResources(world_, true);
 
+    // Establish the team alliances (ally + non-aggression pacts) exactly like GameClient::StartGame does
+    // for a fresh map. Without this the recorded game has no pacts, so teammates are mutually attackable
+    // and the AIs attack each other; on replay GameClient *does* set up the pacts, so those recorded
+    // attack commands are handled differently -> the replay desyncs (object-count divergence). See #replay.
+    for(unsigned i = 0; i < world_.GetNumPlayers(); ++i)
+        world_.GetPlayer(i).MakeStartPacts();
+
     players_.clear();
     improved_.clear();
     for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)

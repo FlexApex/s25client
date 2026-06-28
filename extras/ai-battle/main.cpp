@@ -1,31 +1,28 @@
-// Copyright (C) 2005 - 2026 Settlers Freaks (sf-team at siedler25.org)
+// Copyright (C) 2005 - 2024 Settlers Freaks (sf-team at siedler25.org)
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "GlobalGameSettings.h"
 #include "HeadlessGame.h"
 #include "QuickStartGame.h"
+#include "addons/const_addons.h"
+#include "gameTypes/TeamTypes.h"
+#include <sstream>
 #include "RTTR_Version.h"
 #include "RttrConfig.h"
-#include "addons/Addon.h"
-#include "addons/AddonBool.h"
-#include "addons/AddonList.h"
-#include "addons/const_addons.h"
 #include "ai/random.h"
 #include "files.h"
-#include "gameTypes/TeamTypes.h"
 #include "random/Random.h"
-#include "s25util/StringConversion.h"
 #include "s25util/System.h"
+#include "s25util/strAlgos.h"
 
+#include <cstdlib>
+#include <memory>
 #include <boost/filesystem.hpp>
 #include <boost/nowide/args.hpp>
 #include <boost/nowide/filesystem.hpp>
 #include <boost/nowide/iostream.hpp>
 #include <boost/program_options.hpp>
-#include <boost/property_tree/ini_parser.hpp>
-#include <iomanip>
-#include <sstream>
 #if BOOST_VERSION >= 109000
 #    include <optional>
 using std::optional;
@@ -38,38 +35,6 @@ namespace bnw = boost::nowide;
 namespace bfs = boost::filesystem;
 namespace po = boost::program_options;
 
-static void loadAddonsFromIni(GlobalGameSettings& ggs, const bfs::path& iniPath)
-{
-    if(!bfs::exists(iniPath))
-        throw std::runtime_error("Settings file not found: " + iniPath.string());
-
-    boost::property_tree::ptree tree;
-    boost::property_tree::read_ini(iniPath.string(), tree);
-
-    const auto addons = tree.get_child_optional("addons");
-    if(!addons)
-    {
-        bnw::cout << "Note: no [addons] section in " << iniPath << ", using defaults.\n";
-        return;
-    }
-
-    unsigned loaded = 0;
-    for(const auto& entry : *addons)
-    {
-        try
-        {
-            const auto id = static_cast<AddonId>(s25util::fromStringClassic<unsigned>(entry.first));
-            const auto v = entry.second.get_value<unsigned>();
-            ggs.setSelection(id, v);
-            ++loaded;
-        } catch(const std::exception&)
-        {
-            // Unknown or invalid entry - skip silently
-        }
-    }
-    bnw::cout << "Loaded " << loaded << " addon settings from " << iniPath << '\n';
-}
-
 int main(int argc, char** argv)
 {
     bnw::nowide_filesystem();
@@ -77,8 +42,6 @@ int main(int argc, char** argv)
 
     optional<std::string> replay_path;
     optional<std::string> savegame_path;
-    optional<std::string> lua_path;
-    optional<std::string> settings_path;
     unsigned random_init = static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
     unsigned random_ai_init = random_init;
 
@@ -86,15 +49,18 @@ int main(int argc, char** argv)
     // clang-format off
     desc.add_options()
         ("help,h", "Show help")
-        ("map,m", po::value<std::string>()->required(),"Map to load")
-        ("ai", po::value<std::vector<std::string>>()->required(),"AI player(s) to add (aijh | dummy)")
-        ("teams", po::value<std::string>(),"Team assignment, e.g. \"0,1;2,3\" for a 2v2 (groups separated by ';', player indices by ','). Allied players get start pacts.")
-        ("objective", po::value<std::string>()->default_value("domination"),"domination(default) | conquer")
-        ("wares", po::value<std::string>()->default_value("normal"),"Starting wares: vlow | low | normal (default) | alot")
-        ("settings", po::value(&settings_path),"INI file with an [addons] section to configure addon settings (optional)")
+        ("map,m", po::value<std::string>()->required(),"Map (.swd/.wld) or savegame (.sav) to load")
+        ("ai", po::value<std::vector<std::string>>(),"AI player(s) to add (required for maps; ignored for .sav, which carries its own players)")
+        ("objective", po::value<std::string>()->default_value("domination"),"domination(default)|conquer")
         ("replay", po::value(&replay_path),"Filename to write replay to (optional)")
         ("save", po::value(&savegame_path),"Filename to write savegame to (optional)")
-        ("lua", po::value(&lua_path),"Lua script to execute during the game (optional)")
+        ("stats", po::value<std::string>(),"CSV file to write per-player trajectory stats to (optional)")
+        ("statsInterval", po::value<unsigned>()->default_value(1000),"Game-frame interval between stats rows")
+        ("baseline", po::value<std::vector<unsigned>>()->multitoken(),"Player index(es) using the ORIGINAL (unimproved) AI, for A/B testing")
+        ("teams", po::value<std::string>(),"Team assignment, e.g. \"0,1;2,3\" for a 2v2 (groups separated by ';', player indices by ',')")
+        ("inexhaustibleMines", po::bool_switch(),"Enable INEXHAUSTIBLE_MINES addon (mines never deplete)")
+        ("goldDeposits", po::value<unsigned>(),"CHANGE_GOLD_DEPOSITS selection: 0=none 1=remove 2=iron 3=coal 4=granite")
+        ("maxRank", po::value<unsigned>(),"MAX_RANK selection: 0=General(4) .. 4=Private(0)")
         ("random_init", po::value(&random_init),"Seed value for the random number generator (optional)")
         ("random_ai_init", po::value(&random_ai_init),"Seed value for the AI random number generator (optional)")
         ("maxGF", po::value<unsigned>()->default_value(std::numeric_limits<unsigned>::max()),"Maximum number of game frames to run (optional)")
@@ -102,16 +68,9 @@ int main(int argc, char** argv)
         ;
     // clang-format on
 
-    const auto printHelp = [&](std::ostream& os) {
-        os << desc
-           << "\nNote: path arguments support the <RTTR_USERDATA> placeholder "
-              "(game data folder: SAVES, REPLAYS, MAPS, PRESETS)."
-           << std::endl;
-    };
-
     if(argc == 1)
     {
-        printHelp(bnw::cerr);
+        bnw::cerr << desc << std::endl;
         return 1;
     }
 
@@ -122,7 +81,7 @@ int main(int argc, char** argv)
 
         if(options.count("help"))
         {
-            printHelp(bnw::cout);
+            bnw::cout << desc << std::endl;
             return 0;
         }
         if(options.count("version"))
@@ -137,7 +96,7 @@ int main(int argc, char** argv)
     } catch(const std::exception& e)
     {
         bnw::cerr << "Error: " << e.what() << std::endl;
-        printHelp(bnw::cerr);
+        bnw::cerr << desc << std::endl;
         return 1;
     }
 
@@ -156,93 +115,92 @@ int main(int argc, char** argv)
         AI::getRandomGenerator().seed(random_ai_init);
 
         const bfs::path mapPath = RTTRCONFIG.ExpandPath(options["map"].as<std::string>());
-        const std::vector<AI::Info> ais = ParseAIOptions(options["ai"].as<std::vector<std::string>>());
+        const bool isSavegame = s25util::toLower(mapPath.extension().string()) == ".sav";
 
-        GlobalGameSettings ggs;
-        const auto objective = options["objective"].as<std::string>();
-        if(objective == "domination")
+        std::unique_ptr<HeadlessGame> game;
+        if(isSavegame)
+        {
+            // Settings, players and world state all come from the save. --ai / addon / team flags
+            // are ignored (the save already encodes them).
+            bnw::cout << "Loading savegame: " << mapPath << std::endl;
+            game = std::make_unique<HeadlessGame>(mapPath);
+        } else
+        {
+            if(!options.count("ai"))
+            {
+                bnw::cerr << "--ai is required when loading a map (only .sav files carry their own players)"
+                          << std::endl;
+                return 1;
+            }
+            const std::vector<AI::Info> ais = ParseAIOptions(options["ai"].as<std::vector<std::string>>());
+
+            GlobalGameSettings ggs;
+            const auto objective = options["objective"].as<std::string>();
+            if(objective == "domination")
+                ggs.objective = GameObjective::TotalDomination;
+            else if(objective == "conquer")
+                ggs.objective = GameObjective::Conquer3_4;
+            else
+            {
+                bnw::cerr << "unknown objective: " << objective << std::endl;
+                return 1;
+            }
+
             ggs.objective = GameObjective::TotalDomination;
-        else if(objective == "conquer")
-            ggs.objective = GameObjective::Conquer3_4;
-        else
-        {
-            bnw::cerr << "unknown objective: " << objective << std::endl;
-            return 1;
-        }
 
-        const auto wares = options["wares"].as<std::string>();
-        if(wares == "vlow")
-            ggs.startWares = StartWares::VLow;
-        else if(wares == "low")
-            ggs.startWares = StartWares::Low;
-        else if(wares == "normal")
-            ggs.startWares = StartWares::Normal;
-        else if(wares == "alot")
-            ggs.startWares = StartWares::ALot;
-        else
-        {
-            bnw::cerr << "Unknown wares value: " << wares << std::endl;
-            return 1;
-        }
+            // Addon settings (so simulations can match a real game's rules)
+            if(options["inexhaustibleMines"].as<bool>())
+                ggs.setSelection(AddonId::INEXHAUSTIBLE_MINES, 1);
+            if(options.count("goldDeposits"))
+                ggs.setSelection(AddonId::CHANGE_GOLD_DEPOSITS, options["goldDeposits"].as<unsigned>());
+            if(options.count("maxRank"))
+                ggs.setSelection(AddonId::MAX_RANK, options["maxRank"].as<unsigned>());
 
-        if(settings_path)
-        {
-            loadAddonsFromIni(ggs, RTTRCONFIG.ExpandPath(*settings_path));
+            std::vector<unsigned> baselinePlayers;
+            if(options.count("baseline"))
+                baselinePlayers = options["baseline"].as<std::vector<unsigned>>();
 
-            bnw::cout << "settings: " << RTTRCONFIG.ExpandPath(*settings_path) << std::endl;
-            bnw::cout << "addon selections (non-default only):" << std::endl;
-            for(unsigned i = 0; i < ggs.getNumAddons(); ++i)
+            // Team assignment, e.g. "0,1;2,3". Player -> Team (Team1, Team2, ...).
+            std::vector<Team> teams;
+            if(options.count("teams"))
             {
-                unsigned status = 0;
-                const Addon* addon = ggs.getAddon(i, status);
-                if(addon && status != addon->getDefaultStatus())
+                const std::string spec = options["teams"].as<std::string>();
+                std::stringstream groups(spec);
+                std::string group;
+                unsigned teamIdx = 0;
+                while(std::getline(groups, group, ';'))
                 {
-                    bnw::cout << "  [0x" << std::hex << std::setw(8) << std::setfill('0')
-                              << static_cast<unsigned>(addon->getId()) << std::dec << "] " << addon->getName() << " = ";
-                    if(const auto* listAddon = dynamic_cast<const AddonList*>(addon))
-                        bnw::cout << listAddon->getOptionName(status);
-                    else if(dynamic_cast<const AddonBool*>(addon))
-                        bnw::cout << (status ? "True" : "False");
-                    else
-                        bnw::cout << status;
-                    bnw::cout << std::endl;
+                    const Team team = static_cast<Team>(static_cast<uint8_t>(Team::Team1) + teamIdx);
+                    std::stringstream members(group);
+                    std::string idx;
+                    while(std::getline(members, idx, ','))
+                    {
+                        if(idx.empty())
+                            continue;
+                        const unsigned p = static_cast<unsigned>(std::stoul(idx));
+                        if(p >= teams.size())
+                            teams.resize(p + 1, Team::None);
+                        teams[p] = team;
+                    }
+                    ++teamIdx;
                 }
             }
+
+            game = std::make_unique<HeadlessGame>(ggs, mapPath, ais, baselinePlayers, teams);
         }
 
-        // Team assignment, e.g. "0,1;2,3". Player index -> Team (Team1, Team2, ...).
-        std::vector<Team> teams;
-        if(options.count("teams"))
-        {
-            std::stringstream groups(options["teams"].as<std::string>());
-            std::string group;
-            unsigned teamIdx = 0;
-            while(std::getline(groups, group, ';'))
-            {
-                const Team team = static_cast<Team>(static_cast<uint8_t>(Team::Team1) + teamIdx);
-                std::stringstream members(group);
-                std::string idx;
-                while(std::getline(members, idx, ','))
-                {
-                    if(idx.empty())
-                        continue;
-                    const unsigned p = static_cast<unsigned>(std::stoul(idx));
-                    if(p >= teams.size())
-                        teams.resize(p + 1, Team::None);
-                    teams[p] = team;
-                }
-                ++teamIdx;
-            }
-        }
-
-        HeadlessGame game(ggs, mapPath, ais, lua_path ? RTTRCONFIG.ExpandPath(*lua_path) : bfs::path{}, teams);
         if(replay_path)
-            game.RecordReplay(RTTRCONFIG.ExpandPath(*replay_path), random_init);
+            game->RecordReplay(*replay_path, random_init);
+        if(options.count("stats"))
+            game->EnableStats(options["stats"].as<std::string>(), options["statsInterval"].as<unsigned>());
 
-        game.Run(options["maxGF"].as<unsigned>());
-        game.Close();
+        if(std::getenv("RTTR_ANALYZE")) // one-shot food/mine economy dump of the loaded (or freshly built) state
+            game->AnalyzeEconomy();
+
+        game->Run(options["maxGF"].as<unsigned>());
+        game->Close();
         if(savegame_path)
-            game.SaveGame(RTTRCONFIG.ExpandPath(*savegame_path));
+            game->SaveGame(*savegame_path);
     } catch(const std::exception& e)
     {
         bnw::cerr << e.what() << std::endl;

@@ -4,9 +4,7 @@ Guidance for AI agents working on **s25client** (Return to the Roots).
 
 ## Coding conventions
 
-Full reference: <https://github.com/Return-To-The-Roots/s25client/wiki/Coding-conventions>.
-The essentials to follow:
-
+- Never add a Co-Authored By line or otherwise mention the agent in a commit message
 - **C++17, and code must compile warning-free** (builds use `-Werror`).
 - **Run clang-format (v10) before finishing** — `make clangFormat`; CI rejects unformatted code. Static analysis: `tools/runClangTidy.sh`.
 - **Naming:** types `UpperCamelCase`; functions/params/locals `lowerCamelCase`; **member variables end with `_`** (`foo_`). Setters `setX`, getters `isX`/`canX`. No variable shadowing.
@@ -29,6 +27,25 @@ When evaluating an AI's competitiveness, test on these maps (all under the same 
 Across **multiple seeds and both map orientations**, under: **2v2, Hard, inexhaustible mines,
 gold→granite** (no gold deposits, so military strength = soldier count). The bar is to stay
 competitive with **AIJH-Hard** with **no plateau** over long (~4h, ~288k GF) games.
+
+### Tooling (from master's ai-battle harness)
+
+Build the headless tools with the normal CMake build; binaries land in `build/bin/`.
+
+- **`ai-battle`** — runs an AI-only game with no window/rendering. AI names: `aijh`, `apex`/`apexai`,
+  `llm`, `dummy`. The ruleset above maps to flags:
+  `ai-battle -m <map> --ai apex --ai aijh --ai apex --ai aijh --teams "0,2;1,3" --inexhaustibleMines --goldDeposits 4 --maxGF 288000`
+  - `--stats <csv> --statsInterval <gf>` — per-player trajectory log (machine-readable A/B data).
+  - `--baseline <idx...>` — make those players use the *original* (unimproved) AIJH for A/B testing.
+  - `--save <f.sav>` / `--replay <f.rpl>` — write a savegame / record a replay; pass a `.sav` as `-m` to continue it.
+  - `RTTR_ANALYZE=1 ai-battle ...` — one-shot food-chain + mine-state economy dump of the loaded state.
+- **`replay-verify <game.rpl>`** — headless replay desync checker (exit 0 in-sync, 2 desync). Reports the
+  first divergent GF and which checksum field broke. Diagnostic env switches: `RTTR_VERIFY_TRACE`,
+  `RTTR_VERIFY_RUN_AI`, `RTTR_VERIFY_NO_SETUPRES`, `RTTR_VERIFY_NO_PACTS`. See `extras/replay-verify/README.md`.
+- **LLM AI** — `extras/ai-battle/llm_sidecar.py` is the runtime companion for the `llm` AI (spool dir via
+  `RTTR_LLM_SPOOL`); `extras/ai-battle/run_llm_game.sh <map>` starts the sidecar + a game and cleans up.
+
+Run the engine from a build tree with `RTTR_RTTR_DIR="$PWD/data/RTTR" RTTR_USERDATA_DIR="$HOME/.s25rttr"`.
 
 ## Submodules
 

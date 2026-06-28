@@ -56,7 +56,9 @@ class PlayerResult:
     military: int
     buildings: int
     inhabitants: int
+    productivity: int
     soldiers: int
+    milblds: int
 
 
 @dataclasses.dataclass
@@ -71,6 +73,7 @@ class GameResult:
     finished: bool
     players: dict  # idx -> PlayerResult
     wall_secs: float
+    winner: int = -1
     ok: bool = True
     error: str = ""
 
@@ -104,6 +107,20 @@ class GameResult:
         return (c - b) / max(c + b, 1)
 
 
+def game_summary(res):
+    """Per-game record: outcome plus the parsed end-of-game stats for each AI. Written to a game's
+    result.json and embedded (one per game) in the run-level summary.json."""
+    return {
+        "map": res.map_name, "seed": res.seed, "orientation": res.orientation,
+        "challenger_slot": res.challenger_slot, "baseline_slot": res.baseline_slot,
+        "verdict": res.verdict(), "reason": res.reason, "gf": res.gf, "finished": res.finished,
+        "winner": res.winner, "wall_secs": round(res.wall_secs, 1), "ok": res.ok, "error": res.error,
+        "land_margin": round(res.land_margin(), 4) if res.ok else None,
+        "challenger": dataclasses.asdict(res.challenger) if res.ok and res.challenger else None,
+        "baseline": dataclasses.asdict(res.baseline) if res.ok and res.baseline else None,
+    }
+
+
 def wilson_interval(wins, n, z=1.96):
     """95% Wilson score interval for a binomial proportion (robust for small n / extreme p)."""
     if n == 0:
@@ -118,10 +135,12 @@ def wilson_interval(wins, n, z=1.96):
 def parse_output(text):
     players = {}
     reason = gf = finished = None
+    winner = -1
     for line in text.splitlines():
         m = RESULT_RE.match(line)
         if m:
             reason, gf, finished = m.group(1), int(m.group(2)), bool(int(m.group(3)))
+            winner = int(m.group(5))
             continue
         m = PLAYER_RE.match(line)
         if m:
@@ -134,21 +153,32 @@ def parse_output(text):
                 military=int(m.group(6)),
                 buildings=int(m.group(7)),
                 inhabitants=int(m.group(8)),
+                productivity=int(m.group(9)),
                 soldiers=int(m.group(10)),
+                milblds=int(m.group(11)),
             )
     if reason is None or not players:
         return None
-    return reason, gf, finished, players
+    return reason, gf, finished, winner, players
 
 
-def run_game(args, map_name, positions, seed, orientation, out_dir):
-    """orientation 0: [challenger, baseline] -> slots positions[0], positions[1]; orientation 1: swapped."""
+def run_game(args, map_name, positions, seed, orientation, games_dir):
+    """orientation 0: [challenger, baseline] -> slots positions[0], positions[1]; orientation 1: swapped.
+
+    Every game gets its own subfolder under games_dir holding ALL of its artefacts: the invocation
+    (invocation.json), console (game.log), replay (replay.rpl), final savegame (save.sav), optional
+    per-frame trajectory (stats.csv), and the parsed per-player end stats (result.json).
+    """
     if orientation == 0:
         ais = [args.challenger, args.baseline]
         challenger_slot, baseline_slot = positions[0], positions[1]
     else:
         ais = [args.baseline, args.challenger]
         challenger_slot, baseline_slot = positions[1], positions[0]
+
+    tag = f"{Path(map_name).stem}_seed{seed}_o{orientation}"
+    game_dir = games_dir / tag
+    game_dir.mkdir(parents=True, exist_ok=True)
 
     map_path = Path(args.mapdir) / map_name
     cmd = [str(args.bin), "--map", str(map_path)]
@@ -161,30 +191,44 @@ def run_game(args, map_name, positions, seed, orientation, out_dir):
     cmd += ["--goldDeposits", str(args.gold_deposits)]
     if args.dominance_factor > 0:
         cmd += ["--minDominanceGF", str(args.min_dominance_gf), "--dominanceFactor", str(args.dominance_factor)]
-    tag = f"{Path(map_name).stem}_seed{seed}_o{orientation}"
+    cmd += ["--replay", str(game_dir / "replay.rpl"), "--save", str(game_dir / "save.sav")]
     if args.stats:
-        cmd += ["--stats", str(out_dir / f"{tag}.csv"), "--statsInterval", str(args.stats_interval)]
+        cmd += ["--stats", str(game_dir / "stats.csv"), "--statsInterval", str(args.stats_interval)]
+
+    # Setup / invocation info, written up front so a crashed/timed-out game is still self-describing.
+    (game_dir / "invocation.json").write_text(json.dumps({
+        "map": map_name, "seed": seed, "orientation": orientation,
+        "challenger": args.challenger, "baseline": args.baseline,
+        "challenger_slot": challenger_slot, "baseline_slot": baseline_slot,
+        "positions": positions, "ais_by_slot": dict(zip((positions[0], positions[1]), ais)),
+        "max_gf": args.max_gf, "inexhaustible_mines": args.inexhaustible_mines,
+        "gold_deposits": args.gold_deposits, "dominance_factor": args.dominance_factor,
+        "min_dominance_gf": args.min_dominance_gf,
+        "cmd": cmd, "cmd_str": " ".join(cmd),
+    }, indent=2))
 
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
         out = proc.stdout + "\n" + proc.stderr
     except subprocess.TimeoutExpired as e:
-        (out_dir / f"{tag}.log").write_text((e.stdout or "") + "\n[TIMEOUT]")
+        (game_dir / "game.log").write_text((e.stdout or "") + "\n[TIMEOUT]")
         return GameResult(map_name, seed, orientation, challenger_slot, baseline_slot, "timeout", 0, False, {},
                           time.time() - t0, ok=False, error="timeout")
     wall = time.time() - t0
-    (out_dir / f"{tag}.log").write_text(out)
+    (game_dir / "game.log").write_text(out)
 
     parsed = parse_output(out)
     if parsed is None:
         return GameResult(map_name, seed, orientation, challenger_slot, baseline_slot, "parse-error", 0, False, {},
-                          wall, ok=False, error="no RESULT block (crash?). See log: " + tag + ".log")
-    reason, gf, finished, players = parsed
-    res = GameResult(map_name, seed, orientation, challenger_slot, baseline_slot, reason, gf, finished, players, wall)
+                          wall, ok=False, error=f"no RESULT block (crash?). See log: {tag}/game.log")
+    reason, gf, finished, winner, players = parsed
+    res = GameResult(map_name, seed, orientation, challenger_slot, baseline_slot, reason, gf, finished, players, wall,
+                     winner=winner)
     if res.challenger is None or res.baseline is None:
         res.ok = False
         res.error = "challenger/baseline slot missing from RESULT"
+    (game_dir / "result.json").write_text(json.dumps(game_summary(res), indent=2))
     return res
 
 
@@ -229,7 +273,8 @@ def main():
     ts = time.strftime("%Y%m%d-%H%M%S")
     name = f"{ts}_{args.challenger}_vs_{args.baseline}" + (f"_{args.label}" if args.label else "")
     out_dir = Path(args.out_dir) if args.out_dir else (REPO_ROOT / "ai-battle-runs" / "eval" / name)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    games_dir = out_dir / "games"
+    games_dir.mkdir(parents=True, exist_ok=True)
 
     jobs = [(m, s, o) for m in args.maps for s in args.seeds for o in (0, 1)]
 
@@ -241,7 +286,7 @@ def main():
     results = []
     done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = {ex.submit(run_game, args, m, positions, s, o, out_dir): (m, s, o) for (m, s, o) in jobs}
+        futs = {ex.submit(run_game, args, m, positions, s, o, games_dir): (m, s, o) for (m, s, o) in jobs}
         for fut in concurrent.futures.as_completed(futs):
             r = fut.result()
             results.append(r)
@@ -299,16 +344,7 @@ def summarize(args, results, out_dir):
         "challenger": args.challenger, "baseline": args.baseline, "maps": args.maps, "positions": args.positions,
         "seeds": args.seeds, "max_gf": args.max_gf, "totals": tot, "overall_winshare": overall,
         "decisive_games": decisive, "ci95": [ci_low, ci_high], "passed": passed,
-        "games": [
-            {
-                "map": r.map_name, "seed": r.seed, "orientation": r.orientation, "verdict": r.verdict(),
-                "reason": r.reason, "gf": r.gf, "finished": r.finished, "wall_secs": round(r.wall_secs, 1),
-                "ok": r.ok, "error": r.error,
-                "challenger": dataclasses.asdict(r.challenger) if r.ok and r.challenger else None,
-                "baseline": dataclasses.asdict(r.baseline) if r.ok and r.baseline else None,
-            }
-            for r in results
-        ],
+        "games": [game_summary(r) for r in results],
     }
     (out_dir / "summary.json").write_text(json.dumps(payload, indent=2))
     print(f"\nWrote {out_dir / 'summary.json'}")

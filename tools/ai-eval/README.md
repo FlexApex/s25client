@@ -68,9 +68,11 @@ populated land reaches `--dominance-factor`× the other's (default 3×, after 60
 | `--jobs N` | cpus-1 | games run in parallel |
 | `--stats` | off | also write per-game trajectory CSVs |
 
-Output: a per-map and overall W/L/D table with the 95% CI and a `PASS`/`FAIL`/`INCONCLUSIVE` verdict,
-plus per-game logs and a `summary.json` under `ai-battle-runs/eval/<timestamp>_<challenger>_vs_<baseline>/`
-(see `ai-battle-runs/README.md` for the full layout of generated run data).
+Output: a per-map and overall W/L/D table with the 95% CI and a `PASS`/`FAIL`/`INCONCLUSIVE` verdict.
+The run lands under `ai-battle-runs/eval/<timestamp>_<challenger>_vs_<baseline>/`: a run-level `summary.json`
+over all games, and a `games/<map>_seed<N>_o<0|1>/` subfolder per game holding all of that game's artefacts
+(invocation, console log, parsed `result.json`, replay `.rpl`, final `.sav`, and the trajectory `.csv` with
+`--stats`). See `ai-battle-runs/README.md` for the full layout.
 
 ## `ai-battle` additions used by the harness
 

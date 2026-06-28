@@ -8,9 +8,15 @@ README and the `.gitignore` are tracked) — delete anything in here freely; it 
 ai-battle-runs/
 ├── eval/     # one folder per ai-eval run  (tools/ai-eval/eval.py writes here by default)
 │   └── <timestamp>_<challenger>_vs_<baseline>[_<label>]/
-│       ├── summary.json                  # machine-readable totals: per-map W/L/D, win-share, 95% CI, verdict
-│       ├── <map>_seed<N>_o<0|1>.log      # full ai-battle console output for each game (incl. the RESULT block)
-│       └── <map>_seed<N>_o<0|1>.csv      # per-player trajectory (only with eval.py --stats)
+│       ├── summary.json              # run-level totals over ALL games: per-map W/L/D, win-share, 95% CI, verdict
+│       └── games/                    # one subfolder per game played, holding ALL of that game's artefacts
+│           └── <map>_seed<N>_o<0|1>/
+│               ├── invocation.json   # setup: exact cmd, AIs+slots, seed, map, addon settings
+│               ├── game.log          # full ai-battle console output (incl. the RESULT block)
+│               ├── result.json       # parsed outcome + end-of-game stats per player (land/military/buildings/…)
+│               ├── replay.rpl        # replay (re-watchable / re-verifiable)
+│               ├── save.sav          # final savegame
+│               └── stats.csv         # per-player trajectory over time (only with eval.py --stats)
 │
 └── games/    # one folder per single ad-hoc game  (tools/ai-eval/run-game.sh writes here)
     └── <timestamp>_<map>/
@@ -33,7 +39,9 @@ any) go to `<RTTR_USERDATA>/LOGS` (`~/.s25rttr/LOGS` on Linux), which is outside
 
 ## Inspecting
 
-- `summary.json` is the quickest read for an eval run's outcome.
-- The `*.log` files contain each game's `RESULT` / `RESULT_PLAYER` block and the live progress table.
-- The `*.csv` files (one row per player per `statsInterval` frames) are easy to plot or diff to see how a
+- `summary.json` is the quickest read for an eval run's outcome (it also embeds every game's record).
+- A game's `result.json` is the quickest read for that single game: who won and the end stats per player.
+- The `game.log` files contain each game's `RESULT` / `RESULT_PLAYER` block and the live progress table.
+- The `stats.csv` files (one row per player per `statsInterval` frames) are easy to plot or diff to see how a
   game developed (land, military, buildings, soldiers, the production chain, …).
+- `invocation.json` records the exact command and settings, so any game is reproducible in isolation.

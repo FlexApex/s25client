@@ -1,27 +1,19 @@
-// Copyright (C) 2005 - 2024 Settlers Freaks (sf-team at siedler25.org)
+// Copyright (C) 2005 - 2026 Settlers Freaks (sf-team at siedler25.org)
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "HeadlessGame.h"
-#include "BuildingRegister.h"
 #include "EventManager.h"
-#include "GamePlayer.h"
 #include "GlobalGameSettings.h"
 #include "PlayerInfo.h"
 #include "Savegame.h"
-#include "ai/aijh/AIPlayerJH.h"
-#include "ai/llm/AIPlayerLlm.h"
 #include "factories/AIFactory.h"
 #include "network/PlayerGameCommands.h"
 #include "world/GameWorld.h"
 #include "world/MapLoader.h"
-#include "gameTypes/BuildingType.h"
-#include "gameTypes/Inventory.h"
-#include "gameTypes/JobTypes.h"
 #include "gameTypes/MapInfo.h"
-#include "gameTypes/StatisticTypes.h"
 #include "gameData/GameConsts.h"
-#include "helpers/containerUtils.h"
+#include "s25util/colors.h"
 #include <boost/nowide/iostream.hpp>
 #include <chrono>
 #include <cstdio>
@@ -36,6 +28,7 @@ std::string HumanReadableNumber(unsigned num);
 
 namespace bfs = boost::filesystem;
 namespace bnw = boost::nowide;
+
 using bfs::canonical;
 
 #ifdef WIN32
@@ -51,34 +44,29 @@ void printConsole(const char* fmt, ...);
 #endif
 
 HeadlessGame::HeadlessGame(const GlobalGameSettings& ggs, const bfs::path& map, const std::vector<AI::Info>& ais,
-                           const std::vector<unsigned>& baselinePlayers)
+                           const bfs::path& luaPath)
     : map_(map), game_(ggs, std::make_unique<EventManager>(0), GeneratePlayerInfo(ais)), world_(game_.world_),
       em_(*static_cast<EventManager*>(game_.em_.get()))
 {
     MapLoader loader(world_);
     if(!loader.Load(map))
         throw std::runtime_error("Could not load " + map.string());
+    MapLoader::SetupResources(world_);
 
-    players_.clear();
-    improved_.clear();
-    for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
+    if(!luaPath.empty())
     {
-        const AI::Info& aiInfo = world_.GetPlayer(playerId).aiInfo;
-        const bool useImproved = !helpers::contains(baselinePlayers, playerId);
-        improved_.push_back(useImproved && aiInfo.type == AI::Type::Default);
-        if(aiInfo.type == AI::Type::Default)
-            players_.push_back(std::make_unique<AIJH::AIPlayerJH>(playerId, world_, aiInfo.level, useImproved));
-        else
-            players_.push_back(AIFactory::Create(aiInfo, playerId, world_));
+        if(!loader.LoadLuaScript(game_, localState_, luaPath))
+            throw std::runtime_error("Failed to load Lua script: " + luaPath.string());
+        world_.GetLua().setSuppressStdout(true);
+        luaPath_ = luaPath;
+        bnw::cout << "Lua script loaded: " << luaPath << '\n';
     }
 
-    world_.InitAfterLoad();
-}
+    players_.clear();
+    for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
+        players_.push_back(AIFactory::Create(world_.GetPlayer(playerId).aiInfo, playerId, world_));
 
-void HeadlessGame::EnableStats(const bfs::path& path, unsigned interval)
-{
-    statsPath_ = path;
-    statsInterval_ = interval;
+    world_.InitAfterLoad();
 }
 
 HeadlessGame::~HeadlessGame()
@@ -93,16 +81,6 @@ void HeadlessGame::Run(unsigned maxGF)
     auto nextReport = gameStartTime_ + std::chrono::seconds(1);
 
     game_.Start(false);
-
-    if(statsInterval_ > 0)
-    {
-        statsFile_ = std::fopen(statsPath_.string().c_str(), "w");
-        if(statsFile_)
-        {
-            WriteStatsHeader();
-            WriteStatsRow();
-        }
-    }
 
     while(em_.GetCurrentGF() < maxGF && !game_.IsGameFinished())
     {
@@ -139,9 +117,6 @@ void HeadlessGame::Run(unsigned maxGF)
         if(replay_.IsRecording())
             replay_.UpdateLastGF(em_.GetCurrentGF());
 
-        if(statsFile_ && statsInterval_ > 0 && em_.GetCurrentGF() % statsInterval_ == 0)
-            WriteStatsRow();
-
         if(std::chrono::steady_clock::now() > nextReport)
         {
             nextReport += std::chrono::seconds(1);
@@ -149,59 +124,6 @@ void HeadlessGame::Run(unsigned maxGF)
         }
     }
     PrintState();
-    if(statsFile_)
-    {
-        WriteStatsRow();
-        std::fclose(statsFile_);
-        statsFile_ = nullptr;
-    }
-}
-
-void HeadlessGame::WriteStatsHeader()
-{
-    std::fprintf(statsFile_,
-                 "gf,player,name,improved,defeated,country,buildings,inhabitants,merchandise,military,gold,"
-                 "productivity,vanquished,milblds,storehouses,soldiers,generals,helpers,boards,stones,coins,"
-                 "swords,shields,beer,sawmills,foresters,farms,ironmines,coalmines,goldmines,smelters,armories,"
-                 "metalworks,mints,catapults,attacks\n");
-}
-
-void HeadlessGame::WriteStatsRow()
-{
-    const unsigned gf = em_.GetCurrentGF();
-    for(unsigned p = 0; p < world_.GetNumPlayers(); ++p)
-    {
-        const GamePlayer& pl = world_.GetPlayer(p);
-        const Inventory& inv = pl.GetInventory();
-        const unsigned soldiers = inv.people[Job::Private] + inv.people[Job::PrivateFirstClass]
-                                  + inv.people[Job::Sergeant] + inv.people[Job::Officer] + inv.people[Job::General];
-        const BuildingRegister& br = pl.GetBuildingRegister();
-        const auto nb = [&](BuildingType bt) { return br.GetBuildings(bt).size(); };
-        const auto* jh = dynamic_cast<const AIJH::AIPlayerJH*>(players_[p].get());
-        const auto* llm = dynamic_cast<const AIllm::AIPlayerLlm*>(players_[p].get());
-        const unsigned attacks = jh ? jh->GetNumAttacksLaunched() : (llm ? llm->GetNumAttacksLaunched() : 0u);
-        std::fprintf(statsFile_,
-                     "%u,%u,%s,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%zu,%zu,%u,%u,%u,%u,%u,%u,%u,%u,%u,"
-                     "%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%zu,%u\n",
-                     gf, p, pl.name.c_str(), improved_[p] ? 1 : 0, pl.IsDefeated() ? 1 : 0,
-                     pl.GetStatisticCurrentValue(StatisticType::Country),
-                     pl.GetStatisticCurrentValue(StatisticType::Buildings),
-                     pl.GetStatisticCurrentValue(StatisticType::Inhabitants),
-                     pl.GetStatisticCurrentValue(StatisticType::Merchandise),
-                     pl.GetStatisticCurrentValue(StatisticType::Military),
-                     pl.GetStatisticCurrentValue(StatisticType::Gold),
-                     pl.GetStatisticCurrentValue(StatisticType::Productivity),
-                     pl.GetStatisticCurrentValue(StatisticType::Vanquished),
-                     pl.GetBuildingRegister().GetMilitaryBuildings().size(),
-                     pl.GetBuildingRegister().GetStorehouses().size(), soldiers, inv.people[Job::General],
-                     inv.people[Job::Helper], inv.goods[GoodType::Boards], inv.goods[GoodType::Stones],
-                     inv.goods[GoodType::Coins], inv.goods[GoodType::Sword], inv.goods[GoodType::ShieldRomans],
-                     inv.goods[GoodType::Beer], nb(BuildingType::Sawmill), nb(BuildingType::Forester),
-                     nb(BuildingType::Farm), nb(BuildingType::IronMine), nb(BuildingType::CoalMine),
-                     nb(BuildingType::GoldMine), nb(BuildingType::Ironsmelter), nb(BuildingType::Armory),
-                     nb(BuildingType::Metalworks), nb(BuildingType::Mint), nb(BuildingType::Catapult), attacks);
-    }
-    std::fflush(statsFile_);
 }
 
 void HeadlessGame::Close()
@@ -228,6 +150,12 @@ void HeadlessGame::RecordReplay(const bfs::path& path, unsigned random_init)
     mapInfo.filepath = map_;
     mapInfo.mapData.CompressFromFile(mapInfo.filepath, &mapInfo.mapChecksum);
     mapInfo.type = MapType::OldMap;
+
+    if(!luaPath_.empty() && bfs::exists(luaPath_))
+    {
+        mapInfo.luaFilepath = luaPath_;
+        mapInfo.luaData.CompressFromFile(luaPath_, &mapInfo.luaChecksum);
+    }
 
     for(unsigned playerId = 0; playerId < world_.GetNumPlayers(); ++playerId)
         replay_.AddPlayer(world_.GetPlayer(playerId));
@@ -318,12 +246,12 @@ std::vector<PlayerInfo> GeneratePlayerInfo(const std::vector<AI::Info>& ais)
         switch(ai.type)
         {
             case AI::Type::Default: pi.name = "AIJH " + std::to_string(ret.size()); break;
-            case AI::Type::Llm: pi.name = "LLM " + std::to_string(ret.size()); break;
             case AI::Type::Dummy:
             default: pi.name = "Dummy " + std::to_string(ret.size()); break;
         }
         pi.nation = Nation::Romans;
         pi.team = Team::None;
+        pi.color = PLAYER_COLORS[ret.size() % PLAYER_COLORS.size()];
         ret.push_back(pi);
     }
     return ret;

@@ -1,5 +1,4 @@
-# Per-run eval output (logs, stats CSVs, summaries) — regenerated on every run.
-results/
+# Per-run eval output now lives under <repo>/ai-battle-runs/ (git-ignored there).
 
 # Python bytecode cache
 __pycache__/
